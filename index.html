@@ -53,9 +53,14 @@
       };
 
       const signIn = () => {
-        const redirectUri = window.location.origin + window.location.pathname;
+        let redirectUri = window.location.href.split('#')[0].split('?')[0];
+        // Ensure trailing slash for consistency
+        if (!redirectUri.endsWith('/')) {
+          redirectUri += '/';
+        }
         const scope = 'https://www.googleapis.com/auth/calendar';
-        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scope)}`;
+        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scope)}&prompt=consent`;
+        console.log('Redirect URI:', redirectUri); // Debug log
         window.location.href = authUrl;
       };
 
