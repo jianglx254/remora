@@ -673,4 +673,93 @@
     const EventForm = ({ event, calendars, onSave, onDelete }) => {
       const [title, setTitle] = React.useState(event?.summary || '');
       const [description, setDescription] = React.useState(event?.description || '');
-      const [start, setStart] = React.useState(event?.start?.dateTime ? event.start.dateTime.slice(0, 16)
+      const [start, setStart] = React.useState(event?.start?.dateTime ? event.start.dateTime.slice(0, 16) : '');
+      const [end, setEnd] = React.useState(event?.end?.dateTime ? event.end.dateTime.slice(0, 16) : '');
+      const [calendarId, setCalendarId] = React.useState(event?.calendarId || calendars[0]?.id || '');
+
+      return (
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          onSave({ title, description, start: new Date(start).toISOString(), end: new Date(end).toISOString(), calendarId });
+        }} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Title</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full border rounded px-3 py-2"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Calendar</label>
+            <select
+              value={calendarId}
+              onChange={(e) => setCalendarId(e.target.value)}
+              className="w-full border rounded px-3 py-2"
+            >
+              {calendars.map(cal => (
+                <option key={cal.id} value={cal.id}>{cal.summary}</option>
+              ))}
+            </select>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Start Time</label>
+            <input
+              type="datetime-local"
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              className="w-full border rounded px-3 py-2"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">End Time</label>
+            <input
+              type="datetime-local"
+              value={end}
+              onChange={(e) => setEnd(e.target.value)}
+              className="w-full border rounded px-3 py-2"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium mb-1">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full border rounded px-3 py-2"
+              rows={3}
+            />
+          </div>
+          
+          <div className="flex gap-2 justify-end">
+            {onDelete && (
+              <button
+                type="button"
+                onClick={onDelete}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Delete
+              </button>
+            )}
+            <button
+              type="submit"
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              Save
+            </button>
+          </div>
+        </form>
+      );
+    };
+
+    ReactDOM.render(<CalendarApp />, document.getElementById('root'));
+  </script>
+</body>
+</html>
