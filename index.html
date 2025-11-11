@@ -12,6 +12,11 @@
     :root {
       --dartmouth-green: #00693E;
       --light-green: #E8F5E9;
+      --bg-color: #FAFAFA;
+      --border-color: #E5E5E5;
+    }
+    body {
+      background-color: var(--bg-color);
     }
     .current-time-indicator {
       position: absolute;
@@ -36,6 +41,30 @@
       opacity: 0.5;
       cursor: grabbing;
     }
+    @keyframes mergeConsume {
+      0% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(0.9);
+        opacity: 0.7;
+      }
+      100% {
+        transform: scale(0);
+        opacity: 0;
+      }
+    }
+    .merging-out {
+      animation: mergeConsume 0.5s ease-out forwards;
+    }
+    .event-block {
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      transition: box-shadow 0.2s;
+    }
+    .event-block:hover {
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
   </style>
 </head>
 <body>
@@ -58,10 +87,15 @@
       const [isDragging, setIsDragging] = useState(false);
       const [dragStart, setDragStart] = useState(null);
       const [dragEnd, setDragEnd] = useState(null);
+      const [draggingEvent, setDraggingEvent] = useState(null);
+      const [dragOffset, setDragOffset] = useState(null);
+      const [mergingEvents, setMergingEvents] = useState(null);
       const [currentTime, setCurrentTime] = useState(new Date());
       const [isLoading, setIsLoading] = useState(false);
       const [loadingMessage, setLoadingMessage] = useState('');
       const [error, setError] = useState(null);
+      const [eventCache, setEventCache] = useState({});
+      const [showOnlyColumn1, setShowOnlyColumn1] = useState(false);
       const clientId = '788943371871-n713sgr9t3oifkev2abln7615eulgbv4.apps.googleusercontent.com';
 
       // Update current time every minute
@@ -102,10 +136,15 @@
           }
         }
 
-        // Load default calendar from localStorage
+        // Load default calendar and show only column 1 setting
         const savedDefault = localStorage.getItem('default_calendar');
         if (savedDefault) {
           setDefaultCalendar(savedDefault);
+        }
+        
+        const savedShowOnlyColumn1 = localStorage.getItem('show_only_column1');
+        if (savedShowOnlyColumn1 !== null) {
+          setShowOnlyColumn1(savedShowOnlyColumn1 === 'true');
         }
       }, []);
 
@@ -210,85 +249,116 @@
         try {
           setLoadingMessage('Loading events...');
           const token = accessToken || localStorage.getItem('google_access_token');
-          const timeMin = new Date(currentDate);
-          timeMin.setDate(1);
-          const timeMax = new Date(currentDate);
-          timeMax.setMonth(timeMax.getMonth() + 1);
+          
+          const now = new Date();
+          const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+          const futureMonthEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59);
+          const pastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
           const allEvents = [];
           
-          // Load events in parallel for better performance
-          const eventPromises = calendarList.map(async (calendar) => {
-            try {
-              const response = await fetch(
-                `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&maxResults=2500`,
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              
-              if (!response.ok) {
-                console.warn(`Failed to load events for ${calendar.summary}`);
-                return [];
-              }
-              
-              const data = await response.json();
-              return (data.items || []).map(event => ({ 
-                ...event, 
-                calendarId: calendar.id, 
-                calendarColor: calendar.backgroundColor 
-              }));
-            } catch (error) {
-              console.warn(`Error loading events for ${calendar.summary}:`, error);
-              return [];
-            }
-          });
+          // Priority 1: Current month
+          setLoadingMessage('Loading current month...');
+          const currentMonthEvents = await loadEventsForTimeRange(token, calendarList, currentMonthStart, currentMonthEnd);
+          allEvents.push(...currentMonthEvents);
+          setEvents([...allEvents]);
           
-          const eventArrays = await Promise.all(eventPromises);
-          eventArrays.forEach(events => allEvents.push(...events));
+          // Priority 2: Next month
+          setLoadingMessage('Loading future events...');
+          const futureEvents = await loadEventsForTimeRange(token, calendarList, currentMonthEnd, futureMonthEnd);
+          allEvents.push(...futureEvents);
+          setEvents([...allEvents]);
           
-          setEvents(allEvents);
+          // Priority 3: Previous month
+          setLoadingMessage('Loading past events...');
+          const pastEvents = await loadEventsForTimeRange(token, calendarList, pastMonthStart, currentMonthStart);
+          allEvents.push(...pastEvents);
+          setEvents([...allEvents]);
+          
+          setLoadingMessage('');
         } catch (error) {
           console.error('Error loading events:', error);
           setError('Some events failed to load.');
+          setLoadingMessage('');
         }
+      };
+
+      const loadEventsForTimeRange = async (token, calendarList, timeMin, timeMax) => {
+        const cacheKey = `${timeMin.toISOString()}-${timeMax.toISOString()}`;
+        
+        // Check cache first
+        if (eventCache[cacheKey]) {
+          return eventCache[cacheKey];
+        }
+
+        const allEvents = [];
+        const eventPromises = calendarList.map(async (calendar) => {
+          try {
+            const response = await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&maxResults=2500`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            
+            if (!response.ok) {
+              console.warn(`Failed to load events for ${calendar.summary}`);
+              return [];
+            }
+            
+            const data = await response.json();
+            return (data.items || []).map(event => ({ 
+              ...event, 
+              calendarId: calendar.id, 
+              calendarColor: calendar.backgroundColor 
+            }));
+          } catch (error) {
+            console.warn(`Error loading events for ${calendar.summary}:`, error);
+            return [];
+          }
+        });
+        
+        const eventArrays = await Promise.all(eventPromises);
+        eventArrays.forEach(events => allEvents.push(...events));
+        
+        // Cache the results
+        setEventCache(prev => ({...prev, [cacheKey]: allEvents}));
+        
+        return allEvents;
       };
 
       const loadEvents = async (accessToken) => {
         if (calendars.length === 0) return;
         
+        // Check if we need to load more data
+        const now = new Date();
+        const viewStart = new Date(currentDate);
+        viewStart.setDate(1);
+        const viewEnd = new Date(currentDate);
+        viewEnd.setMonth(viewEnd.getMonth() + 1);
+        
+        // Only reload if viewing a time period we don't have cached
+        const needsReload = !Object.keys(eventCache).some(key => {
+          const [start, end] = key.split('-');
+          const cacheStart = new Date(start);
+          const cacheEnd = new Date(end);
+          return viewStart >= cacheStart && viewEnd <= cacheEnd;
+        });
+        
+        if (!needsReload) {
+          // Use cached data
+          const relevantEvents = Object.values(eventCache)
+            .flat()
+            .filter(event => {
+              const eventDate = new Date(event.start.dateTime || event.start.date);
+              return eventDate >= viewStart && eventDate <= viewEnd;
+            });
+          setEvents(relevantEvents);
+          return;
+        }
+        
         try {
           setLoadingMessage('Refreshing events...');
-          const token = accessToken || localStorage.getItem('google_access_token');
-          const timeMin = new Date(currentDate);
-          timeMin.setDate(1);
-          const timeMax = new Date(currentDate);
-          timeMax.setMonth(timeMax.getMonth() + 1);
-
-          const allEvents = [];
-          
-          const eventPromises = calendars.map(async (calendar) => {
-            try {
-              const response = await fetch(
-                `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&maxResults=2500`,
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              
-              if (!response.ok) return [];
-              
-              const data = await response.json();
-              return (data.items || []).map(event => ({ 
-                ...event, 
-                calendarId: calendar.id, 
-                calendarColor: calendar.backgroundColor 
-              }));
-            } catch (error) {
-              return [];
-            }
-          });
-          
-          const eventArrays = await Promise.all(eventPromises);
-          eventArrays.forEach(events => allEvents.push(...events));
-          
-          setEvents(allEvents);
+          await loadEventsForCalendars(accessToken, calendars);
           setLoadingMessage('');
         } catch (error) {
           console.error('Error loading events:', error);
@@ -417,21 +487,216 @@
       const handleMouseDown = (e, hour, columnId) => {
         if (e.target.closest('.event-block')) return;
         const rect = e.currentTarget.getBoundingClientRect();
-        const minutes = Math.floor(((e.clientY - rect.top) / rect.height) * 60);
+        const relativeY = e.clientY - rect.top;
+        const totalMinutes = (relativeY / rect.height) * 60;
+        const snappedMinutes = Math.round(totalMinutes / 15) * 15;
+        
         const start = new Date(currentDate);
-        start.setHours(hour, minutes, 0, 0);
+        start.setHours(hour, snappedMinutes, 0, 0);
+        
         setIsDragging(true);
         setDragStart({ time: start, columnId });
         setDragEnd({ time: start, columnId });
       };
 
+      const handleEventDragStart = (e, event) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        setDraggingEvent(event);
+        setDragOffset({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        });
+      };
+
+      const handleEventDrag = (e, hour) => {
+        if (!draggingEvent) return;
+        // Just visual feedback, actual update happens on mouseup
+      };
+
+      const handleEventDragEnd = async (e, hour, columnId) => {
+        if (!draggingEvent) return;
+        
+        const rect = e.currentTarget.getBoundingClientRect();
+        const relativeY = e.clientY - rect.top;
+        const totalMinutes = (relativeY / rect.height) * 60;
+        const snappedMinutes = Math.round(totalMinutes / 15) * 15;
+        
+        const newStart = new Date(currentDate);
+        newStart.setHours(hour, snappedMinutes, 0, 0);
+        
+        const offsetMinutes = Math.round((dragOffset.y / rect.height) * 60 / 15) * 15;
+        newStart.setMinutes(newStart.getMinutes() - offsetMinutes);
+        
+        const originalStart = new Date(draggingEvent.start.dateTime);
+        const originalEnd = new Date(draggingEvent.end.dateTime);
+        const duration = originalEnd - originalStart;
+        
+        const newEnd = new Date(newStart.getTime() + duration);
+        
+        // Get the calendar for the target column
+        const column = columns.find(c => c.id === columnId);
+        const targetCalendarId = column?.calendarIds[0] || draggingEvent.calendarId;
+        
+        // Update the event
+        try {
+          const token = localStorage.getItem('google_access_token');
+          
+          // If moving to a different calendar, delete from old and create in new
+          if (targetCalendarId !== draggingEvent.calendarId) {
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              }
+            );
+            
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: draggingEvent.summary,
+                  description: draggingEvent.description,
+                  start: { dateTime: newStart.toISOString() },
+                  end: { dateTime: newEnd.toISOString() }
+                })
+              }
+            );
+          } else {
+            // Just update the time
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: draggingEvent.summary,
+                  description: draggingEvent.description,
+                  start: { dateTime: newStart.toISOString() },
+                  end: { dateTime: newEnd.toISOString() }
+                })
+              }
+            );
+          }
+          
+          // Clear cache and reload
+          setEventCache({});
+          await loadEvents();
+        } catch (error) {
+          console.error('Error moving event:', error);
+        }
+        
+        setDraggingEvent(null);
+        setDragOffset(null);
+      };
+
       const handleMouseMove = (e, hour) => {
         if (!isDragging) return;
         const rect = e.currentTarget.getBoundingClientRect();
-        const minutes = Math.floor(((e.clientY - rect.top) / rect.height) * 60);
+        const relativeY = e.clientY - rect.top;
+        const totalMinutes = (relativeY / rect.height) * 60;
+        const snappedMinutes = Math.round(totalMinutes / 15) * 15;
+        
         const end = new Date(currentDate);
-        end.setHours(hour, minutes, 0, 0);
+        end.setHours(hour, snappedMinutes, 0, 0);
         setDragEnd({ time: end, columnId: dragStart.columnId });
+      };
+
+      const findOverlappingEventsInColumn = (event, columnEvents) => {
+        const eventStart = new Date(event.start.dateTime);
+        const eventEnd = new Date(event.end.dateTime);
+        
+        return columnEvents.filter(other => {
+          if (other.id === event.id) return false;
+          const otherStart = new Date(other.start.dateTime);
+          const otherEnd = new Date(other.end.dateTime);
+          
+          // Check if times overlap
+          const timesOverlap = eventStart < otherEnd && otherStart < eventEnd;
+          if (!timesOverlap) return false;
+          
+          // Check if they have at least 2 common words
+          const words1 = event.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+          const words2 = other.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+          const commonWords = words1.filter(w => words2.includes(w)).length;
+          
+          return commonWords >= 2;
+        });
+      };
+
+      const mergeEvents = async (event1, event2, targetCalendarId) => {
+        const eventToDelete = event1.calendarId === targetCalendarId ? event2 : event1;
+        const eventToKeep = event1.calendarId === targetCalendarId ? event1 : event2;
+        
+        // Determine which event is longer (the one that will "consume")
+        const event1Duration = new Date(event1.end.dateTime) - new Date(event1.start.dateTime);
+        const event2Duration = new Date(event2.end.dateTime) - new Date(event2.start.dateTime);
+        const longerEvent = event1Duration >= event2Duration ? event1 : event2;
+        const shorterEvent = longerEvent.id === event1.id ? event2 : event1;
+        
+        // Start merge animation
+        setMergingEvents({ longer: longerEvent, shorter: shorterEvent });
+        
+        // Wait for animation
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        try {
+          const token = localStorage.getItem('google_access_token');
+          
+          // Delete the event NOT in the target calendar
+          await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToDelete.calendarId)}/events/${eventToDelete.id}`,
+            {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` }
+            }
+          );
+          
+          // If the event to keep is not in the target calendar, move it
+          if (eventToKeep.calendarId !== targetCalendarId) {
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToKeep.calendarId)}/events/${eventToKeep.id}`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              }
+            );
+            
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: eventToKeep.summary,
+                  description: eventToKeep.description,
+                  start: eventToKeep.start,
+                  end: eventToKeep.end
+                })
+              }
+            );
+          }
+          
+          setEventCache({});
+          await loadEvents();
+          setMergingEvents(null);
+        } catch (error) {
+          console.error('Error merging events:', error);
+          setError('Failed to merge events');
+          setMergingEvents(null);
+        }
       };
 
       const handleMouseUp = () => {
@@ -476,10 +741,16 @@
             const event2Start = new Date(other.start.dateTime || other.start.date);
             const event2End = new Date(other.end.dateTime || other.end.date);
 
-            if (Math.abs(event1Start - event2Start) < 5 * 60 * 1000 && 
-                Math.abs(event1End - event2End) < 5 * 60 * 1000) {
-              const similarity = calculateSimilarity(event.summary, other.summary);
-              if (similarity > 0.6) {
+            // Check if times overlap
+            const timesOverlap = event1Start < event2End && event2Start < event1End;
+            
+            if (timesOverlap) {
+              // Check if they have at least 2 common words
+              const words1 = event.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const words2 = other.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const commonWords = words1.filter(w => words2.includes(w)).length;
+              
+              if (commonWords >= 2) {
                 similar.push(other);
                 processed.add(j);
               }
@@ -524,38 +795,70 @@
       };
 
       const layoutOverlappingEvents = (events) => {
+        if (events.length === 0) return [];
+        
         const sorted = [...events].sort((a, b) => {
           const aStart = new Date(a.start.dateTime || a.start.date);
           const bStart = new Date(b.start.dateTime || b.start.date);
           return aStart - bStart;
         });
 
-        const columns = [];
-        sorted.forEach(event => {
+        // For each event, check what it overlaps with
+        const eventLayouts = sorted.map(event => {
           const eventStart = new Date(event.start.dateTime || event.start.date);
           const eventEnd = new Date(event.end.dateTime || event.end.date);
+          
+          // Find all events this overlaps with
+          const overlapping = sorted.filter(other => {
+            if (other.id === event.id) return false;
+            const otherStart = new Date(other.start.dateTime || other.start.date);
+            const otherEnd = new Date(other.end.dateTime || other.end.date);
+            return eventStart < otherEnd && otherStart < eventEnd;
+          });
+          
+          return {
+            event,
+            overlapping: overlapping.length
+          };
+        });
 
-          let placed = false;
-          for (let col of columns) {
-            const lastEvent = col[col.length - 1];
-            const lastEnd = new Date(lastEvent.end.dateTime || lastEvent.end.date);
-            if (eventStart >= lastEnd) {
-              col.push(event);
-              placed = true;
-              break;
-            }
-          }
-          if (!placed) {
+        // Build columns dynamically
+        const columns = [];
+        eventLayouts.forEach(({ event, overlapping }) => {
+          if (overlapping === 0) {
+            // No overlap, gets its own full-width column
             columns.push([event]);
+          } else {
+            // Has overlap, try to place in existing column
+            const eventStart = new Date(event.start.dateTime || event.start.date);
+            const eventEnd = new Date(event.end.dateTime || event.end.date);
+            
+            let placed = false;
+            for (let col of columns) {
+              const lastEvent = col[col.length - 1];
+              const lastEnd = new Date(lastEvent.end.dateTime || lastEvent.end.date);
+              if (eventStart >= lastEnd) {
+                col.push(event);
+                placed = true;
+                break;
+              }
+            }
+            if (!placed) {
+              columns.push([event]);
+            }
           }
         });
 
+        // Assign column info to each event
         return sorted.map(event => {
           const colIndex = columns.findIndex(col => col.includes(event));
+          const { overlapping } = eventLayouts.find(el => el.event.id === event.id);
+          
           return {
             ...event,
             layoutColumn: colIndex,
-            totalColumns: columns.length
+            totalColumns: overlapping === 0 ? 1 : columns.length,
+            hasOverlap: overlapping > 0
           };
         });
       };
@@ -597,10 +900,10 @@
               </div>
             )}
 
-            <div className="flex border-b bg-gray-50">
-              <div className="w-16 flex-shrink-0 border-r"></div>
+            <div className="flex border-b bg-gray-50" style={{ borderColor: 'var(--border-color)' }}>
+              <div className="w-16 flex-shrink-0 border-r" style={{ borderColor: 'var(--border-color)' }}></div>
               {columns.map((column, idx) => (
-                <div key={column.id} className="flex-1 p-2 border-r font-semibold text-center flex items-center justify-center gap-2">
+                <div key={column.id} className="flex-1 p-2 border-r font-semibold text-center flex items-center justify-center gap-2" style={{ borderColor: 'var(--border-color)', backgroundColor: 'white' }}>
                   {column.name}
                   {idx === columns.length - 1 && (
                     <button
@@ -637,8 +940,14 @@
                         key={hour}
                         className="h-16 border-b hover:bg-gray-50 cursor-crosshair relative"
                         onMouseDown={(e) => handleMouseDown(e, hour, column.id)}
-                        onMouseMove={(e) => handleMouseMove(e, hour)}
-                        onMouseUp={handleMouseUp}
+                        onMouseMove={(e) => {
+                          handleMouseMove(e, hour);
+                          handleEventDrag(e, hour);
+                        }}
+                        onMouseUp={(e) => {
+                          handleMouseUp();
+                          handleEventDragEnd(e, hour, column.id);
+                        }}
                       >
                         {hour !== 23 && <div className="absolute top-1/2 left-0 right-0 border-t border-gray-200"></div>}
                       </div>
@@ -652,13 +961,17 @@
                       
                       const similarGroup = similarGroups.find(group => group.some(e => e.id === event.id));
                       const isInGroup = similarGroup && similarGroup.length > 1;
-                      const groupCalendars = isInGroup ? similarGroup.map(e => e.calendarId) : [event.calendarId];
-                      const spansColumns = isInGroup && groupCalendars.length > 1;
+                      const groupCalendars = isInGroup ? [...new Set(similarGroup.map(e => e.calendarId))] : [event.calendarId];
                       
-                      const leftOffset = event.totalColumns > 1 ? (event.layoutColumn / event.totalColumns * 100) : 0;
-                      const widthPercent = event.totalColumns > 1 ? (100 / event.totalColumns) : 100;
-
+                      // Check for overlapping similar events in the same column
+                      const overlappingInColumn = findOverlappingEventsInColumn(event, columnEvents);
+                      const canMerge = overlappingInColumn.length > 0;
+                      
+                      // Check if this event is being merged
+                      const isMergingOut = mergingEvents?.shorter?.id === event.id;
+                      
                       let backgroundColor = event.calendarColor || 'var(--dartmouth-green)';
+                      
                       if (isInGroup && groupCalendars.length > 1) {
                         const colors = groupCalendars.map(id => calendars.find(c => c.id === id)?.backgroundColor || 'var(--dartmouth-green)');
                         backgroundColor = `linear-gradient(90deg, ${colors.join(', ')})`;
@@ -667,28 +980,52 @@
                       return (
                         <div
                           key={event.id}
-                          className="absolute rounded text-xs text-white cursor-pointer overflow-hidden event-block"
+                          className={`absolute rounded text-xs text-white cursor-move overflow-visible event-block ${draggingEvent?.id === event.id ? 'opacity-50' : ''} ${isMergingOut ? 'merging-out' : ''}`}
                           style={{
                             top: `${top}px`,
                             height: `${height}px`,
-                            left: `${leftOffset}%`,
-                            width: `calc(${widthPercent}% - ${event.totalColumns > 1 ? '2px' : '4px'})`,
+                            left: event.hasOverlap ? `${(event.layoutColumn / event.totalColumns * 100)}%` : '4px',
+                            width: event.hasOverlap ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)',
                             background: backgroundColor,
-                            border: event.totalColumns > 1 ? '1px solid white' : 'none',
-                            marginLeft: event.totalColumns > 1 ? '1px' : '2px',
-                            marginRight: event.totalColumns > 1 ? '1px' : '2px'
+                            border: 'none',
+                            zIndex: draggingEvent?.id === event.id ? 1000 : (isMergingOut ? 999 : 1)
                           }}
-                          onClick={() => {
-                            setSelectedEvent(event);
-                            setShowEventModal(true);
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleEventDragStart(e, event);
+                          }}
+                          onClick={(e) => {
+                            if (!draggingEvent && !isMergingOut) {
+                              e.stopPropagation();
+                              setSelectedEvent(event);
+                              setShowEventModal(true);
+                            }
                           }}
                         >
-                          <div className="p-1">
-                            <div className="font-semibold truncate">{event.summary}</div>
-                            <div className="text-xs opacity-90">
+                          <div className="p-1.5 pointer-events-none">
+                            <div className="font-medium truncate text-sm">{event.summary}</div>
+                            <div className="text-xs opacity-80 mt-0.5">
                               {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
                             </div>
                           </div>
+                          {canMerge && !isMergingOut && (
+                            <div 
+                              className="absolute top-1 right-1 bg-white text-gray-800 rounded px-1.5 py-0.5 text-xs cursor-pointer hover:bg-gray-200 shadow-sm"
+                              style={{ pointerEvents: 'auto', fontSize: '10px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const otherEvent = overlappingInColumn[0];
+                                const targetCalendar = prompt(`Merge to which calendar?\n1: ${calendars.find(c => c.id === event.calendarId)?.summary}\n2: ${calendars.find(c => c.id === otherEvent.calendarId)?.summary}\n\nEnter 1 or 2:`);
+                                if (targetCalendar === '1') {
+                                  mergeEvents(event, otherEvent, event.calendarId);
+                                } else if (targetCalendar === '2') {
+                                  mergeEvents(event, otherEvent, otherEvent.calendarId);
+                                }
+                              }}
+                            >
+                              Merge
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -731,6 +1068,11 @@
 
         const hours = Array.from({ length: 18 }, (_, i) => i + 6);
         const now = new Date();
+        
+        // Filter events based on showOnlyColumn1 setting
+        const filteredEvents = showOnlyColumn1 && columns.length > 0
+          ? events.filter(event => columns[0].calendarIds.includes(event.calendarId))
+          : events;
 
         return (
           <div className="flex-1 overflow-auto">
@@ -754,7 +1096,7 @@
               </div>
 
               {days.map(day => {
-                const dayEvents = events.filter(event => {
+                const dayEvents = filteredEvents.filter(event => {
                   const eventDate = new Date(event.start.dateTime || event.start.date);
                   return eventDate.toDateString() === day.toDateString() && event.start.dateTime;
                 });
@@ -776,9 +1118,6 @@
                       const end = new Date(event.end.dateTime);
                       const top = ((start.getHours() - 6) * 64) + (start.getMinutes() / 60 * 64);
                       const height = ((end - start) / (1000 * 60 * 60)) * 64;
-                      
-                      const leftOffset = event.totalColumns > 1 ? (event.layoutColumn / event.totalColumns * 100) : 0;
-                      const widthPercent = event.totalColumns > 1 ? (100 / event.totalColumns) : 100;
 
                       return (
                         <div
@@ -787,12 +1126,12 @@
                           style={{
                             top: `${top}px`,
                             height: `${height}px`,
-                            left: `${leftOffset}%`,
-                            width: `calc(${widthPercent}% - ${event.totalColumns > 1 ? '2px' : '4px'})`,
+                            left: event.totalColumns === 1 ? '2px' : `${(event.layoutColumn / event.totalColumns * 100)}%`,
+                            width: event.totalColumns === 1 ? 'calc(100% - 4px)' : `calc(${100 / event.totalColumns}% - 2px)`,
                             backgroundColor: event.calendarColor || 'var(--dartmouth-green)',
                             border: event.totalColumns > 1 ? '1px solid white' : 'none',
-                            marginLeft: '2px',
-                            marginRight: '2px'
+                            marginLeft: '0',
+                            marginRight: '0'
                           }}
                           onClick={() => {
                             setSelectedEvent(event);
@@ -831,6 +1170,11 @@
           current.setDate(current.getDate() + 1);
         }
 
+        // Filter events based on showOnlyColumn1 setting
+        const filteredEvents = showOnlyColumn1 && columns.length > 0
+          ? events.filter(event => columns[0].calendarIds.includes(event.calendarId))
+          : events;
+
         return (
           <div className="flex-1 overflow-auto p-4">
             <div className="grid grid-cols-7 gap-px bg-gray-200">
@@ -847,7 +1191,7 @@
                   }`}
                 >
                   <div className="font-semibold mb-1">{day.getDate()}</div>
-                  {events
+                  {filteredEvents
                     .filter(event => {
                       const eventDate = new Date(event.start.dateTime || event.start.date);
                       return eventDate.toDateString() === day.toDateString();
@@ -912,22 +1256,22 @@
       }
 
       return (
-        <div className="h-screen flex flex-col bg-white">
+        <div className="h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-color)' }}>
           {loadingMessage && (
-            <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-sm text-blue-800 flex items-center gap-2">
+            <div className="bg-blue-50 border-b px-4 py-2 text-sm text-blue-800 flex items-center gap-2" style={{ borderColor: 'var(--border-color)' }}>
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-800"></div>
               {loadingMessage}
             </div>
           )}
           
           {error && (
-            <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-sm text-red-800 flex items-center justify-between">
+            <div className="bg-red-50 border-b px-4 py-2 text-sm text-red-800 flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
               <span>{error}</span>
               <button onClick={() => setError(null)} className="text-red-600 hover:text-red-800">✕</button>
             </div>
           )}
           
-          <div className="border-b p-4 flex items-center justify-between" style={{ borderColor: 'var(--dartmouth-green)' }}>
+          <div className="border-b p-3 flex items-center justify-between bg-white" style={{ borderColor: 'var(--border-color)' }}>
             <div className="flex items-center gap-4">
               <svg className="w-6 h-6" viewBox="0 0 64 64" fill="var(--dartmouth-green)">
                 <path d="M32 8 C20 8, 12 16, 12 28 C12 36, 16 42, 22 46 L20 56 L32 50 L44 56 L42 46 C48 42, 52 36, 52 28 C52 16, 44 8, 32 8 M32 12 C42 12, 48 18, 48 28 C48 34, 45 39, 40 42 L38 44 L39 50 L32 46 L25 50 L26 44 L24 42 C19 39, 16 34, 16 28 C16 18, 22 12, 32 12" />
@@ -1062,6 +1406,21 @@
                           <option key={cal.id} value={cal.id}>{cal.summary}</option>
                         ))}
                       </select>
+                    </div>
+                    
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={showOnlyColumn1}
+                          onChange={(e) => {
+                            setShowOnlyColumn1(e.target.checked);
+                            localStorage.setItem('show_only_column1', e.target.checked.toString());
+                          }}
+                          className="rounded"
+                        />
+                        <span className="text-sm font-semibold">Week/Month View: Show only Column 1 calendars</span>
+                      </label>
                     </div>
                     
                     <div>
