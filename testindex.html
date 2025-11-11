@@ -58,6 +58,8 @@
       const [isDragging, setIsDragging] = useState(false);
       const [dragStart, setDragStart] = useState(null);
       const [dragEnd, setDragEnd] = useState(null);
+      const [draggingEvent, setDraggingEvent] = useState(null);
+      const [dragOffset, setDragOffset] = useState(null);
       const [currentTime, setCurrentTime] = useState(new Date());
       const [isLoading, setIsLoading] = useState(false);
       const [loadingMessage, setLoadingMessage] = useState('');
@@ -425,6 +427,108 @@
         setDragEnd({ time: start, columnId });
       };
 
+      const handleEventDragStart = (e, event) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        setDraggingEvent(event);
+        setDragOffset({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        });
+      };
+
+      const handleEventDrag = (e, hour) => {
+        if (!draggingEvent) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const minutes = Math.floor(((e.clientY - rect.top) / rect.height) * 60);
+        const newStart = new Date(currentDate);
+        newStart.setHours(hour, minutes, 0, 0);
+        
+        // Calculate the offset in minutes
+        const offsetMinutes = Math.floor((dragOffset.y / rect.height) * 60);
+        newStart.setMinutes(newStart.getMinutes() - offsetMinutes);
+      };
+
+      const handleEventDragEnd = async (e, hour, columnId) => {
+        if (!draggingEvent) return;
+        
+        const rect = e.currentTarget.getBoundingClientRect();
+        const minutes = Math.floor(((e.clientY - rect.top) / rect.height) * 60);
+        const newStart = new Date(currentDate);
+        newStart.setHours(hour, minutes, 0, 0);
+        
+        const offsetMinutes = Math.floor((dragOffset.y / rect.height) * 60);
+        newStart.setMinutes(newStart.getMinutes() - offsetMinutes);
+        
+        const originalStart = new Date(draggingEvent.start.dateTime);
+        const originalEnd = new Date(draggingEvent.end.dateTime);
+        const duration = originalEnd - originalStart;
+        
+        const newEnd = new Date(newStart.getTime() + duration);
+        
+        // Get the calendar for the target column
+        const column = columns.find(c => c.id === columnId);
+        const targetCalendarId = column?.calendarIds[0] || draggingEvent.calendarId;
+        
+        // Update the event
+        try {
+          const token = localStorage.getItem('google_access_token');
+          
+          // If moving to a different calendar, delete from old and create in new
+          if (targetCalendarId !== draggingEvent.calendarId) {
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              }
+            );
+            
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: draggingEvent.summary,
+                  description: draggingEvent.description,
+                  start: { dateTime: newStart.toISOString() },
+                  end: { dateTime: newEnd.toISOString() }
+                })
+              }
+            );
+          } else {
+            // Just update the time
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: draggingEvent.summary,
+                  description: draggingEvent.description,
+                  start: { dateTime: newStart.toISOString() },
+                  end: { dateTime: newEnd.toISOString() }
+                })
+              }
+            );
+          }
+          
+          await loadEvents();
+        } catch (error) {
+          console.error('Error moving event:', error);
+        }
+        
+        setDraggingEvent(null);
+        setDragOffset(null);
+      };
+
       const handleMouseMove = (e, hour) => {
         if (!isDragging) return;
         const rect = e.currentTarget.getBoundingClientRect();
@@ -476,10 +580,16 @@
             const event2Start = new Date(other.start.dateTime || other.start.date);
             const event2End = new Date(other.end.dateTime || other.end.date);
 
-            if (Math.abs(event1Start - event2Start) < 5 * 60 * 1000 && 
-                Math.abs(event1End - event2End) < 5 * 60 * 1000) {
-              const similarity = calculateSimilarity(event.summary, other.summary);
-              if (similarity > 0.6) {
+            // Check if times overlap
+            const timesOverlap = event1Start < event2End && event2Start < event1End;
+            
+            if (timesOverlap) {
+              // Check if they have at least 2 common words
+              const words1 = event.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const words2 = other.summary.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+              const commonWords = words1.filter(w => words2.includes(w)).length;
+              
+              if (commonWords >= 2) {
                 similar.push(other);
                 processed.add(j);
               }
@@ -549,6 +659,15 @@
             columns.push([event]);
           }
         });
+
+        // If only one column, all events take full width
+        if (columns.length === 1) {
+          return sorted.map(event => ({
+            ...event,
+            layoutColumn: 0,
+            totalColumns: 1
+          }));
+        }
 
         return sorted.map(event => {
           const colIndex = columns.findIndex(col => col.includes(event));
@@ -637,8 +756,14 @@
                         key={hour}
                         className="h-16 border-b hover:bg-gray-50 cursor-crosshair relative"
                         onMouseDown={(e) => handleMouseDown(e, hour, column.id)}
-                        onMouseMove={(e) => handleMouseMove(e, hour)}
-                        onMouseUp={handleMouseUp}
+                        onMouseMove={(e) => {
+                          handleMouseMove(e, hour);
+                          handleEventDrag(e, hour);
+                        }}
+                        onMouseUp={(e) => {
+                          handleMouseUp();
+                          handleEventDragEnd(e, hour, column.id);
+                        }}
                       >
                         {hour !== 23 && <div className="absolute top-1/2 left-0 right-0 border-t border-gray-200"></div>}
                       </div>
@@ -659,31 +784,47 @@
                       const widthPercent = event.totalColumns > 1 ? (100 / event.totalColumns) : 100;
 
                       let backgroundColor = event.calendarColor || 'var(--dartmouth-green)';
+                      let gradientStyle = {};
+                      
                       if (isInGroup && groupCalendars.length > 1) {
                         const colors = groupCalendars.map(id => calendars.find(c => c.id === id)?.backgroundColor || 'var(--dartmouth-green)');
-                        backgroundColor = `linear-gradient(90deg, ${colors.join(', ')})`;
+                        // Create gradient that spans across all columns
+                        const columnIndex = columns.findIndex(col => col.id === column.id);
+                        const totalCols = columns.length;
+                        const gradientStart = (columnIndex / totalCols) * 100;
+                        const gradientEnd = ((columnIndex + 1) / totalCols) * 100;
+                        backgroundColor = 'transparent';
+                        gradientStyle = {
+                          background: `linear-gradient(90deg, ${colors.map((c, i) => 
+                            `${c} ${(i / colors.length) * 100}%, ${c} ${((i + 1) / colors.length) * 100}%`
+                          ).join(', ')})`
+                        };
                       }
                       
                       return (
                         <div
                           key={event.id}
-                          className="absolute rounded text-xs text-white cursor-pointer overflow-hidden event-block"
+                          className={`absolute rounded text-xs text-white cursor-move overflow-hidden event-block ${draggingEvent?.id === event.id ? 'opacity-50' : ''}`}
                           style={{
                             top: `${top}px`,
                             height: `${height}px`,
-                            left: `${leftOffset}%`,
-                            width: `calc(${widthPercent}% - ${event.totalColumns > 1 ? '2px' : '4px'})`,
-                            background: backgroundColor,
+                            left: event.totalColumns === 1 ? '2px' : `${leftOffset}%`,
+                            width: event.totalColumns === 1 ? 'calc(100% - 4px)' : `calc(${widthPercent}% - ${event.totalColumns > 1 ? '2px' : '4px'})`,
+                            backgroundColor: backgroundColor,
+                            ...gradientStyle,
                             border: event.totalColumns > 1 ? '1px solid white' : 'none',
-                            marginLeft: event.totalColumns > 1 ? '1px' : '2px',
-                            marginRight: event.totalColumns > 1 ? '1px' : '2px'
+                            marginLeft: event.totalColumns > 1 ? '1px' : '0',
+                            marginRight: event.totalColumns > 1 ? '1px' : '0'
                           }}
-                          onClick={() => {
-                            setSelectedEvent(event);
-                            setShowEventModal(true);
+                          onMouseDown={(e) => handleEventDragStart(e, event)}
+                          onClick={(e) => {
+                            if (!draggingEvent) {
+                              setSelectedEvent(event);
+                              setShowEventModal(true);
+                            }
                           }}
                         >
-                          <div className="p-1">
+                          <div className="p-1 pointer-events-none">
                             <div className="font-semibold truncate">{event.summary}</div>
                             <div className="text-xs opacity-90">
                               {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
