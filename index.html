@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Remora Calendar</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path fill='%2300693E' d='M32 8 C20 8, 12 16, 12 28 C12 36, 16 42, 22 46 L20 56 L32 50 L44 56 L42 46 C48 42, 52 36, 52 28 C52 16, 44 8, 32 8 M32 12 C42 12, 48 18, 48 28 C48 34, 45 39, 40 42 L38 44 L39 50 L32 46 L25 50 L26 44 L24 42 C19 39, 16 34, 16 28 C16 18, 22 12, 32 12'/><ellipse fill='%2300693E' cx='26' cy='26' rx='3' ry='4'/><ellipse fill='%2300693E' cx='38' cy='26' rx='3' ry='4'/><path stroke='%2300693E' stroke-width='2' fill='none' d='M24 32 Q32 36 40 32'/></svg>">
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -12,7 +13,7 @@
     :root {
       --dartmouth-green: #00693E;
       --light-green: #E8F5E9;
-      --bg-color: #FAFAFA;
+      --bg-color: #FFFFFF;
       --border-color: #E5E5E5;
     }
     body {
@@ -58,12 +59,33 @@
     .merging-out {
       animation: mergeConsume 0.5s ease-out forwards;
     }
+    @keyframes eventRise {
+      0% {
+        transform: translateY(0) scale(1);
+      }
+      100% {
+        transform: translateY(-2px) scale(1.02);
+      }
+    }
+    @keyframes eventShake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-1px); }
+      75% { transform: translateX(1px); }
+    }
     .event-block {
       box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      transition: box-shadow 0.2s;
+      transition: all 0.2s;
     }
     .event-block:hover {
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      animation: eventRise 0.2s ease-out forwards;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 10 !important;
+    }
+    .event-dragging-active {
+      animation: eventShake 0.1s infinite;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+      cursor: grabbing !important;
+      z-index: 1000 !important;
     }
   </style>
 </head>
@@ -89,13 +111,20 @@
       const [dragEnd, setDragEnd] = useState(null);
       const [draggingEvent, setDraggingEvent] = useState(null);
       const [dragOffset, setDragOffset] = useState(null);
+      const [dragPosition, setDragPosition] = useState(null);
       const [mergingEvents, setMergingEvents] = useState(null);
+      const [showMergeDialog, setShowMergeDialog] = useState(null);
+      const [hoveredEvent, setHoveredEvent] = useState(null);
       const [currentTime, setCurrentTime] = useState(new Date());
       const [isLoading, setIsLoading] = useState(false);
       const [loadingMessage, setLoadingMessage] = useState('');
       const [error, setError] = useState(null);
       const [eventCache, setEventCache] = useState({});
       const [showOnlyColumn1, setShowOnlyColumn1] = useState(false);
+      const [hiddenEvents, setHiddenEvents] = useState(new Set());
+      const [timeZoneOffset, setTimeZoneOffset] = useState(0);
+      const [visibleHourStart, setVisibleHourStart] = useState(6);
+      const [visibleHourEnd, setVisibleHourEnd] = useState(23);
       const clientId = '788943371871-n713sgr9t3oifkev2abln7615eulgbv4.apps.googleusercontent.com';
 
       // Update current time every minute
@@ -145,6 +174,21 @@
         const savedShowOnlyColumn1 = localStorage.getItem('show_only_column1');
         if (savedShowOnlyColumn1 !== null) {
           setShowOnlyColumn1(savedShowOnlyColumn1 === 'true');
+        }
+        
+        const savedTimeZoneOffset = localStorage.getItem('timezone_offset');
+        if (savedTimeZoneOffset !== null) {
+          setTimeZoneOffset(parseInt(savedTimeZoneOffset));
+        }
+        
+        const savedVisibleHourStart = localStorage.getItem('visible_hour_start');
+        if (savedVisibleHourStart !== null) {
+          setVisibleHourStart(parseInt(savedVisibleHourStart));
+        }
+        
+        const savedVisibleHourEnd = localStorage.getItem('visible_hour_end');
+        if (savedVisibleHourEnd !== null) {
+          setVisibleHourEnd(parseInt(savedVisibleHourEnd));
         }
       }, []);
 
@@ -492,7 +536,8 @@
         const snappedMinutes = Math.round(totalMinutes / 15) * 15;
         
         const start = new Date(currentDate);
-        start.setHours(hour, snappedMinutes, 0, 0);
+        // Apply timezone offset only for event creation
+        start.setHours(hour - timeZoneOffset, snappedMinutes, 0, 0);
         
         setIsDragging(true);
         setDragStart({ time: start, columnId });
@@ -600,15 +645,20 @@
       };
 
       const handleMouseMove = (e, hour) => {
-        if (!isDragging) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const relativeY = e.clientY - rect.top;
-        const totalMinutes = (relativeY / rect.height) * 60;
-        const snappedMinutes = Math.round(totalMinutes / 15) * 15;
+        if (isDragging && !draggingEvent) {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relativeY = e.clientY - rect.top;
+          const totalMinutes = (relativeY / rect.height) * 60;
+          const snappedMinutes = Math.round(totalMinutes / 15) * 15;
+          
+          const end = new Date(currentDate);
+          end.setHours(hour - timeZoneOffset, snappedMinutes, 0, 0);
+          setDragEnd({ time: end, columnId: dragStart.columnId });
+        }
         
-        const end = new Date(currentDate);
-        end.setHours(hour, snappedMinutes, 0, 0);
-        setDragEnd({ time: end, columnId: dragStart.columnId });
+        if (draggingEvent && dragOffset) {
+          setDragPosition({ x: e.clientX, y: e.clientY });
+        }
       };
 
       const findOverlappingEventsInColumn = (event, columnEvents) => {
@@ -634,7 +684,7 @@
       };
 
       const mergeEvents = async (event1, event2, targetCalendarId) => {
-        const eventToDelete = event1.calendarId === targetCalendarId ? event2 : event1;
+        const eventToHide = event1.calendarId === targetCalendarId ? event2 : event1;
         const eventToKeep = event1.calendarId === targetCalendarId ? event1 : event2;
         
         // Determine which event is longer (the one that will "consume")
@@ -649,54 +699,11 @@
         // Wait for animation
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        try {
-          const token = localStorage.getItem('google_access_token');
-          
-          // Delete the event NOT in the target calendar
-          await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToDelete.calendarId)}/events/${eventToDelete.id}`,
-            {
-              method: 'DELETE',
-              headers: { Authorization: `Bearer ${token}` }
-            }
-          );
-          
-          // If the event to keep is not in the target calendar, move it
-          if (eventToKeep.calendarId !== targetCalendarId) {
-            await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToKeep.calendarId)}/events/${eventToKeep.id}`,
-              {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
-              }
-            );
-            
-            await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  summary: eventToKeep.summary,
-                  description: eventToKeep.description,
-                  start: eventToKeep.start,
-                  end: eventToKeep.end
-                })
-              }
-            );
-          }
-          
-          setEventCache({});
-          await loadEvents();
-          setMergingEvents(null);
-        } catch (error) {
-          console.error('Error merging events:', error);
-          setError('Failed to merge events');
-          setMergingEvents(null);
-        }
+        // Hide the shorter event (don't delete from Google Calendar)
+        setHiddenEvents(prev => new Set([...prev, shorterEvent.id]));
+        localStorage.setItem('hidden_events', JSON.stringify([...hiddenEvents, shorterEvent.id]));
+        
+        setMergingEvents(null);
       };
 
       const handleMouseUp = () => {
@@ -864,10 +871,10 @@
       };
 
       const renderDayView = () => {
-        const hours = Array.from({ length: 18 }, (_, i) => i + 6);
+        const hours = Array.from({ length: visibleHourEnd - visibleHourStart + 1 }, (_, i) => i + visibleHourStart);
         const dayEvents = events.filter(event => {
           const eventDate = new Date(event.start.dateTime || event.start.date);
-          return eventDate.toDateString() === currentDate.toDateString();
+          return eventDate.toDateString() === currentDate.toDateString() && !hiddenEvents.has(event.id);
         });
 
         const allDayEvents = dayEvents.filter(event => !event.start.dateTime);
@@ -876,7 +883,7 @@
 
         const now = new Date();
         const isToday = currentDate.toDateString() === now.toDateString();
-        const currentTimeTop = isToday ? ((now.getHours() - 6) * 64) + (now.getMinutes() / 60 * 64) : null;
+        const currentTimeTop = isToday ? ((now.getHours() + timeZoneOffset - visibleHourStart) * 64) + (now.getMinutes() / 60 * 64) : null;
 
         return (
           <div className="flex-1 overflow-auto">
@@ -954,10 +961,24 @@
                     ))}
                     
                     {layoutedEvents.map(event => {
+                      if (hiddenEvents.has(event.id)) return null;
+                      
                       const start = new Date(event.start.dateTime);
                       const end = new Date(event.end.dateTime);
-                      const top = ((start.getHours() - 6) * 64) + (start.getMinutes() / 60 * 64);
-                      const height = ((end - start) / (1000 * 60 * 60)) * 64;
+                      
+                      // Apply timezone offset
+                      const adjustedStartHour = start.getHours() + timeZoneOffset;
+                      const adjustedEndHour = end.getHours() + timeZoneOffset;
+                      
+                      // Clip to visible range
+                      const topHour = Math.max(adjustedStartHour, visibleHourStart);
+                      const bottomHour = Math.min(adjustedEndHour, visibleHourEnd);
+                      
+                      // Skip if completely out of range
+                      if (bottomHour <= visibleHourStart || topHour >= visibleHourEnd) return null;
+                      
+                      const top = ((topHour - visibleHourStart) * 64) + (start.getMinutes() / 60 * 64);
+                      const height = Math.max(((bottomHour - topHour) * 64) + ((end.getMinutes() - start.getMinutes()) / 60 * 64), 20);
                       
                       const similarGroup = similarGroups.find(group => group.some(e => e.id === event.id));
                       const isInGroup = similarGroup && similarGroup.length > 1;
@@ -980,23 +1001,32 @@
                       return (
                         <div
                           key={event.id}
-                          className={`absolute rounded text-xs text-white cursor-move overflow-visible event-block ${draggingEvent?.id === event.id ? 'opacity-50' : ''} ${isMergingOut ? 'merging-out' : ''}`}
+                          className={`absolute rounded text-xs text-white cursor-move overflow-visible event-block ${
+                            draggingEvent?.id === event.id ? 'event-dragging-active' : ''
+                          } ${isMergingOut ? 'merging-out' : ''}`}
                           style={{
-                            top: `${top}px`,
+                            top: draggingEvent?.id === event.id && dragPosition ? 
+                              `${dragPosition.y - (dragOffset?.y || 0)}px` : `${top}px`,
                             height: `${height}px`,
-                            left: event.hasOverlap ? `${(event.layoutColumn / event.totalColumns * 100)}%` : '4px',
+                            left: draggingEvent?.id === event.id ? 
+                              '4px' : (event.hasOverlap ? `${(event.layoutColumn / event.totalColumns * 100)}%` : '4px'),
                             width: event.hasOverlap ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)',
                             background: backgroundColor,
                             border: 'none',
-                            zIndex: draggingEvent?.id === event.id ? 1000 : (isMergingOut ? 999 : 1)
+                            zIndex: draggingEvent?.id === event.id ? 1000 : (isMergingOut ? 999 : 1),
+                            position: draggingEvent?.id === event.id ? 'fixed' : 'absolute'
                           }}
+                          onMouseEnter={() => setHoveredEvent(event.id)}
+                          onMouseLeave={() => setHoveredEvent(null)}
                           onMouseDown={(e) => {
                             e.stopPropagation();
+                            e.preventDefault();
                             handleEventDragStart(e, event);
                           }}
                           onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
                             if (!draggingEvent && !isMergingOut) {
-                              e.stopPropagation();
                               setSelectedEvent(event);
                               setShowEventModal(true);
                             }
@@ -1008,19 +1038,18 @@
                               {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
                             </div>
                           </div>
-                          {canMerge && !isMergingOut && (
+                          {canMerge && !isMergingOut && hoveredEvent === event.id && (
                             <div 
                               className="absolute top-1 right-1 bg-white text-gray-800 rounded px-1.5 py-0.5 text-xs cursor-pointer hover:bg-gray-200 shadow-sm"
                               style={{ pointerEvents: 'auto', fontSize: '10px' }}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                e.preventDefault();
                                 const otherEvent = overlappingInColumn[0];
-                                const targetCalendar = prompt(`Merge to which calendar?\n1: ${calendars.find(c => c.id === event.calendarId)?.summary}\n2: ${calendars.find(c => c.id === otherEvent.calendarId)?.summary}\n\nEnter 1 or 2:`);
-                                if (targetCalendar === '1') {
-                                  mergeEvents(event, otherEvent, event.calendarId);
-                                } else if (targetCalendar === '2') {
-                                  mergeEvents(event, otherEvent, otherEvent.calendarId);
-                                }
+                                setShowMergeDialog({
+                                  event1: event,
+                                  event2: otherEvent
+                                });
                               }}
                             >
                               Merge
@@ -1046,7 +1075,7 @@
                       />
                     )}
 
-                    {isToday && currentTimeTop !== null && currentTimeTop >= 0 && currentTimeTop <= 18 * 64 && (
+                    {isToday && currentTimeTop !== null && currentTimeTop >= 0 && currentTimeTop <= (visibleHourEnd - visibleHourStart + 1) * 64 && (
                       <div className="current-time-indicator" style={{ top: `${currentTimeTop}px` }} />
                     )}
                   </div>
@@ -1217,6 +1246,115 @@
         );
       };
 
+      const renderMiniCalendar = () => {
+        const year = currentDate.getFullYear();
+        const month = currentDate.getMonth();
+        const firstDay = new Date(year, month, 1);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - startDate.getDay());
+        
+        const days = [];
+        const current = new Date(startDate);
+        while (days.length < 42) {
+          days.push(new Date(current));
+          current.setDate(current.getDate() + 1);
+        }
+        
+        const today = new Date();
+
+        return (
+          <div className="w-64 border-r p-4 overflow-auto" style={{ borderColor: 'var(--border-color)', backgroundColor: 'white' }}>
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold">{currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</h3>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => {
+                      const newDate = new Date(currentDate);
+                      newDate.setMonth(newDate.getMonth() - 1);
+                      setCurrentDate(newDate);
+                    }}
+                    className="p-1 hover:bg-gray-100 rounded"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const newDate = new Date(currentDate);
+                      newDate.setMonth(newDate.getMonth() + 1);
+                      setCurrentDate(newDate);
+                    }}
+                    className="p-1 hover:bg-gray-100 rounded"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-7 gap-1 text-xs">
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
+                  <div key={i} className="text-center text-gray-500 font-medium py-1">
+                    {day}
+                  </div>
+                ))}
+                {days.map(day => {
+                  const isCurrentMonth = day.getMonth() === month;
+                  const isToday = day.toDateString() === today.toDateString();
+                  const isSelected = day.toDateString() === currentDate.toDateString();
+                  
+                  return (
+                    <button
+                      key={day.toISOString()}
+                      onClick={() => setCurrentDate(new Date(day))}
+                      className={`text-center py-1 rounded text-sm ${
+                        !isCurrentMonth ? 'text-gray-300' :
+                        isToday ? 'bg-blue-500 text-white font-semibold' :
+                        isSelected ? 'bg-gray-200 font-medium' :
+                        'hover:bg-gray-100'
+                      }`}
+                    >
+                      {day.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            
+            <div className="border-t pt-4" style={{ borderColor: 'var(--border-color)' }}>
+              <h3 className="font-semibold mb-3 text-sm">My Calendars</h3>
+              <div className="space-y-2">
+                {calendars.map(cal => (
+                  <div key={cal.id} className="flex items-center gap-2 hover:bg-gray-50 p-1.5 rounded">
+                    <div
+                      className="w-3 h-3 rounded cursor-pointer"
+                      style={{ backgroundColor: cal.backgroundColor }}
+                      title="Calendar color"
+                    />
+                    <span className="text-sm flex-1 truncate">{cal.summary}</span>
+                    <button
+                      onClick={() => {
+                        // Toggle calendar visibility logic here
+                      }}
+                      className="text-gray-400 hover:text-gray-600"
+                      title="Toggle visibility"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
       if (!isSignedIn) {
         return (
           <div className="h-screen flex items-center justify-center" style={{ backgroundColor: 'var(--light-green)' }}>
@@ -1374,9 +1512,15 @@
             </div>
           </div>
 
-          {view === 'day' && renderDayView()}
-          {view === 'week' && renderWeekView()}
-          {view === 'month' && renderMonthView()}
+          <div className="flex flex-1 overflow-hidden">
+            {renderMiniCalendar()}
+            
+            <div className="flex-1 flex flex-col p-4">
+              {view === 'day' && renderDayView()}
+              {view === 'week' && renderWeekView()}
+              {view === 'month' && renderMonthView()}
+            </div>
+          </div>
 
           {showSettings && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1392,6 +1536,63 @@
                   </div>
                   
                   <div className="space-y-6">
+                    <div>
+                      <label className="block font-semibold mb-2">Event Creation Time Calibration</label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">Offset (hours):</span>
+                        <input
+                          type="number"
+                          value={timeZoneOffset}
+                          onChange={(e) => {
+                            const offset = parseFloat(e.target.value) || 0;
+                            setTimeZoneOffset(offset);
+                            localStorage.setItem('timezone_offset', offset.toString());
+                          }}
+                          className="w-24 border rounded px-3 py-2"
+                          step="0.5"
+                        />
+                        <span className="text-xs text-gray-500">Adjust if event creation times are incorrect (can be negative)</span>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <label className="block font-semibold mb-2">Visible Time Range</label>
+                      <div className="flex items-center gap-4">
+                        <div>
+                          <span className="text-sm">Start:</span>
+                          <select
+                            value={visibleHourStart}
+                            onChange={(e) => {
+                              const start = parseInt(e.target.value);
+                              setVisibleHourStart(start);
+                              localStorage.setItem('visible_hour_start', start.toString());
+                            }}
+                            className="ml-2 border rounded px-2 py-1"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i % 12 || 12} {i >= 12 ? 'PM' : 'AM'}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <span className="text-sm">End:</span>
+                          <select
+                            value={visibleHourEnd}
+                            onChange={(e) => {
+                              const end = parseInt(e.target.value);
+                              setVisibleHourEnd(end);
+                              localStorage.setItem('visible_hour_end', end.toString());
+                            }}
+                            className="ml-2 border rounded px-2 py-1"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i % 12 || 12} {i >= 12 ? 'PM' : 'AM'}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    
                     <div>
                       <label className="block font-semibold mb-2">Default Calendar</label>
                       <select
@@ -1494,6 +1695,55 @@
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {showMergeDialog && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[2000]">
+              <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                <h3 className="text-lg font-bold mb-4">Merge Events</h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  Select which calendar to keep the merged event in:
+                </p>
+                <div className="space-y-2 mb-6">
+                  <button
+                    onClick={() => {
+                      mergeEvents(showMergeDialog.event1, showMergeDialog.event2, showMergeDialog.event1.calendarId);
+                      setShowMergeDialog(null);
+                    }}
+                    className="w-full p-3 border-2 rounded hover:bg-gray-50 text-left"
+                    style={{ borderColor: showMergeDialog.event1.calendarColor }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded" style={{ backgroundColor: showMergeDialog.event1.calendarColor }} />
+                      <span className="font-medium">
+                        {calendars.find(c => c.id === showMergeDialog.event1.calendarId)?.summary}
+                      </span>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      mergeEvents(showMergeDialog.event1, showMergeDialog.event2, showMergeDialog.event2.calendarId);
+                      setShowMergeDialog(null);
+                    }}
+                    className="w-full p-3 border-2 rounded hover:bg-gray-50 text-left"
+                    style={{ borderColor: showMergeDialog.event2.calendarColor }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded" style={{ backgroundColor: showMergeDialog.event2.calendarColor }} />
+                      <span className="font-medium">
+                        {calendars.find(c => c.id === showMergeDialog.event2.calendarId)?.summary}
+                      </span>
+                    </div>
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShowMergeDialog(null)}
+                  className="w-full px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           )}
