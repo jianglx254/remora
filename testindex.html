@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Remora Calendar</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path fill='%2300693E' d='M32 8 C20 8, 12 16, 12 28 C12 36, 16 42, 22 46 L20 56 L32 50 L44 56 L42 46 C48 42, 52 36, 52 28 C52 16, 44 8, 32 8 M32 12 C42 12, 48 18, 48 28 C48 34, 45 39, 40 42 L38 44 L39 50 L32 46 L25 50 L26 44 L24 42 C19 39, 16 34, 16 28 C16 18, 22 12, 32 12'/><ellipse fill='%2300693E' cx='26' cy='26' rx='3' ry='4'/><ellipse fill='%2300693E' cx='38' cy='26' rx='3' ry='4'/><path stroke='%2300693E' stroke-width='2' fill='none' d='M24 32 Q32 36 40 32'/></svg>">
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -12,6 +13,11 @@
     :root {
       --dartmouth-green: #00693E;
       --light-green: #E8F5E9;
+      --bg-color: #FFFFFF;
+      --border-color: #E5E5E5;
+    }
+    body {
+      background-color: var(--bg-color);
     }
     .current-time-indicator {
       position: absolute;
@@ -35,6 +41,30 @@
     .event-dragging {
       opacity: 0.5;
       cursor: grabbing;
+    }
+    @keyframes mergeConsume {
+      0% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(0.9);
+        opacity: 0.7;
+      }
+      100% {
+        transform: scale(0);
+        opacity: 0;
+      }
+    }
+    .merging-out {
+      animation: mergeConsume 0.5s ease-out forwards;
+    }
+    .event-block {
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      transition: box-shadow 0.2s;
+    }
+    .event-block:hover {
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
     }
   </style>
 </head>
@@ -60,12 +90,17 @@
       const [dragEnd, setDragEnd] = useState(null);
       const [draggingEvent, setDraggingEvent] = useState(null);
       const [dragOffset, setDragOffset] = useState(null);
+      const [mergingEvents, setMergingEvents] = useState(null);
       const [currentTime, setCurrentTime] = useState(new Date());
       const [isLoading, setIsLoading] = useState(false);
       const [loadingMessage, setLoadingMessage] = useState('');
       const [error, setError] = useState(null);
       const [eventCache, setEventCache] = useState({});
       const [showOnlyColumn1, setShowOnlyColumn1] = useState(false);
+      const [hiddenEvents, setHiddenEvents] = useState(new Set());
+      const [timeZoneOffset, setTimeZoneOffset] = useState(0);
+      const [visibleHourStart, setVisibleHourStart] = useState(6);
+      const [visibleHourEnd, setVisibleHourEnd] = useState(23);
       const clientId = '788943371871-n713sgr9t3oifkev2abln7615eulgbv4.apps.googleusercontent.com';
 
       // Update current time every minute
@@ -115,6 +150,21 @@
         const savedShowOnlyColumn1 = localStorage.getItem('show_only_column1');
         if (savedShowOnlyColumn1 !== null) {
           setShowOnlyColumn1(savedShowOnlyColumn1 === 'true');
+        }
+        
+        const savedTimeZoneOffset = localStorage.getItem('timezone_offset');
+        if (savedTimeZoneOffset !== null) {
+          setTimeZoneOffset(parseInt(savedTimeZoneOffset));
+        }
+        
+        const savedVisibleHourStart = localStorage.getItem('visible_hour_start');
+        if (savedVisibleHourStart !== null) {
+          setVisibleHourStart(parseInt(savedVisibleHourStart));
+        }
+        
+        const savedVisibleHourEnd = localStorage.getItem('visible_hour_end');
+        if (savedVisibleHourEnd !== null) {
+          setVisibleHourEnd(parseInt(savedVisibleHourEnd));
         }
       }, []);
 
@@ -463,6 +513,7 @@
         
         const start = new Date(currentDate);
         start.setHours(hour, snappedMinutes, 0, 0);
+        
         setIsDragging(true);
         setDragStart({ time: start, columnId });
         setDragEnd({ time: start, columnId });
@@ -480,14 +531,7 @@
 
       const handleEventDrag = (e, hour) => {
         if (!draggingEvent) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const minutes = Math.floor(((e.clientY - rect.top) / rect.height) * 60);
-        const newStart = new Date(currentDate);
-        newStart.setHours(hour, minutes, 0, 0);
-        
-        // Calculate the offset in minutes
-        const offsetMinutes = Math.floor((dragOffset.y / rect.height) * 60);
-        newStart.setMinutes(newStart.getMinutes() - offsetMinutes);
+        // Just visual feedback, actual update happens on mouseup
       };
 
       const handleEventDragEnd = async (e, hour, columnId) => {
@@ -610,55 +654,26 @@
       };
 
       const mergeEvents = async (event1, event2, targetCalendarId) => {
-        try {
-          const token = localStorage.getItem('google_access_token');
-          
-          // Delete the event NOT in the target calendar
-          const eventToDelete = event1.calendarId === targetCalendarId ? event2 : event1;
-          const eventToKeep = event1.calendarId === targetCalendarId ? event1 : event2;
-          
-          await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToDelete.calendarId)}/events/${eventToDelete.id}`,
-            {
-              method: 'DELETE',
-              headers: { Authorization: `Bearer ${token}` }
-            }
-          );
-          
-          // If the event to keep is not in the target calendar, move it
-          if (eventToKeep.calendarId !== targetCalendarId) {
-            await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventToKeep.calendarId)}/events/${eventToKeep.id}`,
-              {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
-              }
-            );
-            
-            await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  summary: eventToKeep.summary,
-                  description: eventToKeep.description,
-                  start: eventToKeep.start,
-                  end: eventToKeep.end
-                })
-              }
-            );
-          }
-          
-          setEventCache({});
-          await loadEvents();
-        } catch (error) {
-          console.error('Error merging events:', error);
-          setError('Failed to merge events');
-        }
+        const eventToHide = event1.calendarId === targetCalendarId ? event2 : event1;
+        const eventToKeep = event1.calendarId === targetCalendarId ? event1 : event2;
+        
+        // Determine which event is longer (the one that will "consume")
+        const event1Duration = new Date(event1.end.dateTime) - new Date(event1.start.dateTime);
+        const event2Duration = new Date(event2.end.dateTime) - new Date(event2.start.dateTime);
+        const longerEvent = event1Duration >= event2Duration ? event1 : event2;
+        const shorterEvent = longerEvent.id === event1.id ? event2 : event1;
+        
+        // Start merge animation
+        setMergingEvents({ longer: longerEvent, shorter: shorterEvent });
+        
+        // Wait for animation
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Hide the shorter event (don't delete from Google Calendar)
+        setHiddenEvents(prev => new Set([...prev, shorterEvent.id]));
+        localStorage.setItem('hidden_events', JSON.stringify([...hiddenEvents, shorterEvent.id]));
+        
+        setMergingEvents(null);
       };
 
       const handleMouseUp = () => {
@@ -757,56 +772,79 @@
       };
 
       const layoutOverlappingEvents = (events) => {
+        if (events.length === 0) return [];
+        
         const sorted = [...events].sort((a, b) => {
           const aStart = new Date(a.start.dateTime || a.start.date);
           const bStart = new Date(b.start.dateTime || b.start.date);
           return aStart - bStart;
         });
 
-        const columns = [];
-        sorted.forEach(event => {
+        // For each event, check what it overlaps with
+        const eventLayouts = sorted.map(event => {
           const eventStart = new Date(event.start.dateTime || event.start.date);
           const eventEnd = new Date(event.end.dateTime || event.end.date);
+          
+          // Find all events this overlaps with
+          const overlapping = sorted.filter(other => {
+            if (other.id === event.id) return false;
+            const otherStart = new Date(other.start.dateTime || other.start.date);
+            const otherEnd = new Date(other.end.dateTime || other.end.date);
+            return eventStart < otherEnd && otherStart < eventEnd;
+          });
+          
+          return {
+            event,
+            overlapping: overlapping.length
+          };
+        });
 
-          let placed = false;
-          for (let col of columns) {
-            const lastEvent = col[col.length - 1];
-            const lastEnd = new Date(lastEvent.end.dateTime || lastEvent.end.date);
-            if (eventStart >= lastEnd) {
-              col.push(event);
-              placed = true;
-              break;
-            }
-          }
-          if (!placed) {
+        // Build columns dynamically
+        const columns = [];
+        eventLayouts.forEach(({ event, overlapping }) => {
+          if (overlapping === 0) {
+            // No overlap, gets its own full-width column
             columns.push([event]);
+          } else {
+            // Has overlap, try to place in existing column
+            const eventStart = new Date(event.start.dateTime || event.start.date);
+            const eventEnd = new Date(event.end.dateTime || event.end.date);
+            
+            let placed = false;
+            for (let col of columns) {
+              const lastEvent = col[col.length - 1];
+              const lastEnd = new Date(lastEvent.end.dateTime || lastEvent.end.date);
+              if (eventStart >= lastEnd) {
+                col.push(event);
+                placed = true;
+                break;
+              }
+            }
+            if (!placed) {
+              columns.push([event]);
+            }
           }
         });
 
-        // If only one column, all events take full width
-        if (columns.length === 1) {
-          return sorted.map(event => ({
-            ...event,
-            layoutColumn: 0,
-            totalColumns: 1
-          }));
-        }
-
+        // Assign column info to each event
         return sorted.map(event => {
           const colIndex = columns.findIndex(col => col.includes(event));
+          const { overlapping } = eventLayouts.find(el => el.event.id === event.id);
+          
           return {
             ...event,
             layoutColumn: colIndex,
-            totalColumns: columns.length
+            totalColumns: overlapping === 0 ? 1 : columns.length,
+            hasOverlap: overlapping > 0
           };
         });
       };
 
       const renderDayView = () => {
-        const hours = Array.from({ length: 18 }, (_, i) => i + 6);
+        const hours = Array.from({ length: visibleHourEnd - visibleHourStart + 1 }, (_, i) => i + visibleHourStart);
         const dayEvents = events.filter(event => {
           const eventDate = new Date(event.start.dateTime || event.start.date);
-          return eventDate.toDateString() === currentDate.toDateString();
+          return eventDate.toDateString() === currentDate.toDateString() && !hiddenEvents.has(event.id);
         });
 
         const allDayEvents = dayEvents.filter(event => !event.start.dateTime);
@@ -815,7 +853,7 @@
 
         const now = new Date();
         const isToday = currentDate.toDateString() === now.toDateString();
-        const currentTimeTop = isToday ? ((now.getHours() - 6) * 64) + (now.getMinutes() / 60 * 64) : null;
+        const currentTimeTop = isToday ? ((now.getHours() + timeZoneOffset - visibleHourStart) * 64) + (now.getMinutes() / 60 * 64) : null;
 
         return (
           <div className="flex-1 overflow-auto">
@@ -839,10 +877,10 @@
               </div>
             )}
 
-            <div className="flex border-b bg-gray-50">
-              <div className="w-16 flex-shrink-0 border-r"></div>
+            <div className="flex border-b bg-gray-50" style={{ borderColor: 'var(--border-color)' }}>
+              <div className="w-16 flex-shrink-0 border-r" style={{ borderColor: 'var(--border-color)' }}></div>
               {columns.map((column, idx) => (
-                <div key={column.id} className="flex-1 p-2 border-r font-semibold text-center flex items-center justify-center gap-2">
+                <div key={column.id} className="flex-1 p-2 border-r font-semibold text-center flex items-center justify-center gap-2" style={{ borderColor: 'var(--border-color)', backgroundColor: 'white' }}>
                   {column.name}
                   {idx === columns.length - 1 && (
                     <button
@@ -893,10 +931,24 @@
                     ))}
                     
                     {layoutedEvents.map(event => {
+                      if (hiddenEvents.has(event.id)) return null;
+                      
                       const start = new Date(event.start.dateTime);
                       const end = new Date(event.end.dateTime);
-                      const top = ((start.getHours() - 6) * 64) + (start.getMinutes() / 60 * 64);
-                      const height = ((end - start) / (1000 * 60 * 60)) * 64;
+                      
+                      // Apply timezone offset
+                      const adjustedStartHour = start.getHours() + timeZoneOffset;
+                      const adjustedEndHour = end.getHours() + timeZoneOffset;
+                      
+                      // Clip to visible range
+                      const topHour = Math.max(adjustedStartHour, visibleHourStart);
+                      const bottomHour = Math.min(adjustedEndHour, visibleHourEnd);
+                      
+                      // Skip if completely out of range
+                      if (bottomHour <= visibleHourStart || topHour >= visibleHourEnd) return null;
+                      
+                      const top = ((topHour - visibleHourStart) * 64) + (start.getMinutes() / 60 * 64);
+                      const height = Math.max(((bottomHour - topHour) * 64) + ((end.getMinutes() - start.getMinutes()) / 60 * 64), 20);
                       
                       const similarGroup = similarGroups.find(group => group.some(e => e.id === event.id));
                       const isInGroup = similarGroup && similarGroup.length > 1;
@@ -905,6 +957,9 @@
                       // Check for overlapping similar events in the same column
                       const overlappingInColumn = findOverlappingEventsInColumn(event, columnEvents);
                       const canMerge = overlappingInColumn.length > 0;
+                      
+                      // Check if this event is being merged
+                      const isMergingOut = mergingEvents?.shorter?.id === event.id;
                       
                       let backgroundColor = event.calendarColor || 'var(--dartmouth-green)';
                       
@@ -916,36 +971,40 @@
                       return (
                         <div
                           key={event.id}
-                          className={`absolute rounded text-xs text-white cursor-move overflow-visible event-block ${draggingEvent?.id === event.id ? 'opacity-50' : ''}`}
+                          className={`absolute rounded text-xs text-white cursor-move overflow-visible event-block ${draggingEvent?.id === event.id ? 'opacity-50' : ''} ${isMergingOut ? 'merging-out' : ''}`}
                           style={{
                             top: `${top}px`,
                             height: `${height}px`,
-                            left: event.totalColumns === 1 ? '2px' : `${(event.layoutColumn / event.totalColumns * 100)}%`,
-                            width: event.totalColumns === 1 ? 'calc(100% - 4px)' : `calc(${100 / event.totalColumns}% - 2px)`,
+                            left: event.hasOverlap ? `${(event.layoutColumn / event.totalColumns * 100)}%` : '4px',
+                            width: event.hasOverlap ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)',
                             background: backgroundColor,
-                            border: event.totalColumns > 1 ? '1px solid white' : 'none',
-                            marginLeft: event.totalColumns > 1 ? '1px' : '0',
-                            marginRight: event.totalColumns > 1 ? '1px' : '0',
-                            zIndex: draggingEvent?.id === event.id ? 1000 : 1
+                            border: 'none',
+                            zIndex: draggingEvent?.id === event.id ? 1000 : (isMergingOut ? 999 : 1)
                           }}
-                          onMouseDown={(e) => handleEventDragStart(e, event)}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            handleEventDragStart(e, event);
+                          }}
                           onClick={(e) => {
-                            if (!draggingEvent) {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            if (!draggingEvent && !isMergingOut) {
                               setSelectedEvent(event);
                               setShowEventModal(true);
                             }
                           }}
                         >
-                          <div className="p-1 pointer-events-none">
-                            <div className="font-semibold truncate">{event.summary}</div>
-                            <div className="text-xs opacity-90">
+                          <div className="p-1.5 pointer-events-none">
+                            <div className="font-medium truncate text-sm">{event.summary}</div>
+                            <div className="text-xs opacity-80 mt-0.5">
                               {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
                             </div>
                           </div>
-                          {canMerge && (
+                          {canMerge && !isMergingOut && (
                             <div 
-                              className="absolute top-0 right-0 bg-white text-gray-800 rounded-bl px-1 py-0.5 text-xs cursor-pointer hover:bg-gray-200"
-                              style={{ pointerEvents: 'auto' }}
+                              className="absolute top-1 right-1 bg-white text-gray-800 rounded px-1.5 py-0.5 text-xs cursor-pointer hover:bg-gray-200 shadow-sm"
+                              style={{ pointerEvents: 'auto', fontSize: '10px' }}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 const otherEvent = overlappingInColumn[0];
@@ -980,7 +1039,7 @@
                       />
                     )}
 
-                    {isToday && currentTimeTop !== null && currentTimeTop >= 0 && currentTimeTop <= 18 * 64 && (
+                    {isToday && currentTimeTop !== null && currentTimeTop >= 0 && currentTimeTop <= (visibleHourEnd - visibleHourStart + 1) * 64 && (
                       <div className="current-time-indicator" style={{ top: `${currentTimeTop}px` }} />
                     )}
                   </div>
@@ -1151,6 +1210,87 @@
         );
       };
 
+      const renderMiniCalendar = () => {
+        const year = currentDate.getFullYear();
+        const month = currentDate.getMonth();
+        const firstDay = new Date(year, month, 1);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - startDate.getDay());
+        
+        const days = [];
+        const current = new Date(startDate);
+        while (days.length < 42) {
+          days.push(new Date(current));
+          current.setDate(current.getDate() + 1);
+        }
+        
+        const today = new Date();
+
+        return (
+          <div className="w-64 border-r p-4 overflow-auto" style={{ borderColor: 'var(--border-color)', backgroundColor: 'white' }}>
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold">{currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</h3>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => {
+                      const newDate = new Date(currentDate);
+                      newDate.setMonth(newDate.getMonth() - 1);
+                      setCurrentDate(newDate);
+                    }}
+                    className="p-1 hover:bg-gray-100 rounded"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const newDate = new Date(currentDate);
+                      newDate.setMonth(newDate.getMonth() + 1);
+                      setCurrentDate(newDate);
+                    }}
+                    className="p-1 hover:bg-gray-100 rounded"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-7 gap-1 text-xs">
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
+                  <div key={i} className="text-center text-gray-500 font-medium py-1">
+                    {day}
+                  </div>
+                ))}
+                {days.map(day => {
+                  const isCurrentMonth = day.getMonth() === month;
+                  const isToday = day.toDateString() === today.toDateString();
+                  const isSelected = day.toDateString() === currentDate.toDateString();
+                  
+                  return (
+                    <button
+                      key={day.toISOString()}
+                      onClick={() => setCurrentDate(new Date(day))}
+                      className={`text-center py-1 rounded text-sm ${
+                        !isCurrentMonth ? 'text-gray-300' :
+                        isToday ? 'bg-blue-500 text-white font-semibold' :
+                        isSelected ? 'bg-gray-200 font-medium' :
+                        'hover:bg-gray-100'
+                      }`}
+                    >
+                      {day.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
       if (!isSignedIn) {
         return (
           <div className="h-screen flex items-center justify-center" style={{ backgroundColor: 'var(--light-green)' }}>
@@ -1190,22 +1330,22 @@
       }
 
       return (
-        <div className="h-screen flex flex-col bg-white">
+        <div className="h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-color)' }}>
           {loadingMessage && (
-            <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-sm text-blue-800 flex items-center gap-2">
+            <div className="bg-blue-50 border-b px-4 py-2 text-sm text-blue-800 flex items-center gap-2" style={{ borderColor: 'var(--border-color)' }}>
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-800"></div>
               {loadingMessage}
             </div>
           )}
           
           {error && (
-            <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-sm text-red-800 flex items-center justify-between">
+            <div className="bg-red-50 border-b px-4 py-2 text-sm text-red-800 flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
               <span>{error}</span>
               <button onClick={() => setError(null)} className="text-red-600 hover:text-red-800">✕</button>
             </div>
           )}
           
-          <div className="border-b p-4 flex items-center justify-between" style={{ borderColor: 'var(--dartmouth-green)' }}>
+          <div className="border-b p-3 flex items-center justify-between bg-white" style={{ borderColor: 'var(--border-color)' }}>
             <div className="flex items-center gap-4">
               <svg className="w-6 h-6" viewBox="0 0 64 64" fill="var(--dartmouth-green)">
                 <path d="M32 8 C20 8, 12 16, 12 28 C12 36, 16 42, 22 46 L20 56 L32 50 L44 56 L42 46 C48 42, 52 36, 52 28 C52 16, 44 8, 32 8 M32 12 C42 12, 48 18, 48 28 C48 34, 45 39, 40 42 L38 44 L39 50 L32 46 L25 50 L26 44 L24 42 C19 39, 16 34, 16 28 C16 18, 22 12, 32 12" />
@@ -1308,9 +1448,15 @@
             </div>
           </div>
 
-          {view === 'day' && renderDayView()}
-          {view === 'week' && renderWeekView()}
-          {view === 'month' && renderMonthView()}
+          <div className="flex flex-1 overflow-hidden">
+            {renderMiniCalendar()}
+            
+            <div className="flex-1 flex flex-col p-4">
+              {view === 'day' && renderDayView()}
+              {view === 'week' && renderWeekView()}
+              {view === 'month' && renderMonthView()}
+            </div>
+          </div>
 
           {showSettings && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -1326,6 +1472,63 @@
                   </div>
                   
                   <div className="space-y-6">
+                    <div>
+                      <label className="block font-semibold mb-2">Time Zone Calibration</label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm">Offset (hours):</span>
+                        <input
+                          type="number"
+                          value={timeZoneOffset}
+                          onChange={(e) => {
+                            const offset = parseInt(e.target.value) || 0;
+                            setTimeZoneOffset(offset);
+                            localStorage.setItem('timezone_offset', offset.toString());
+                          }}
+                          className="w-20 border rounded px-3 py-2"
+                          step="0.5"
+                        />
+                        <span className="text-xs text-gray-500">Adjust if times are incorrect</span>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <label className="block font-semibold mb-2">Visible Time Range</label>
+                      <div className="flex items-center gap-4">
+                        <div>
+                          <span className="text-sm">Start:</span>
+                          <select
+                            value={visibleHourStart}
+                            onChange={(e) => {
+                              const start = parseInt(e.target.value);
+                              setVisibleHourStart(start);
+                              localStorage.setItem('visible_hour_start', start.toString());
+                            }}
+                            className="ml-2 border rounded px-2 py-1"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i % 12 || 12} {i >= 12 ? 'PM' : 'AM'}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <span className="text-sm">End:</span>
+                          <select
+                            value={visibleHourEnd}
+                            onChange={(e) => {
+                              const end = parseInt(e.target.value);
+                              setVisibleHourEnd(end);
+                              localStorage.setItem('visible_hour_end', end.toString());
+                            }}
+                            className="ml-2 border rounded px-2 py-1"
+                          >
+                            {Array.from({ length: 24 }, (_, i) => (
+                              <option key={i} value={i}>{i % 12 || 12} {i >= 12 ? 'PM' : 'AM'}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    
                     <div>
                       <label className="block font-semibold mb-2">Default Calendar</label>
                       <select
