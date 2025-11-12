@@ -1238,6 +1238,105 @@
               {days.map(day => {
                 const dayEvents = filteredEvents.filter(event => {
                   const eventDate = new Date(event.start.dateTime || event.start.date);
+                  return eventDate.toDateString() === day.toDateString() && event.start.dateTime && !hiddenCalendars.has(event.calendarId);
+                });
+
+                const layoutedEvents = layoutOverlappingEvents(dayEvents);
+                const isToday = day.toDateString() === now.toDateString();
+                const currentTimeTop = isToday ? ((now.getHours() - 6) * 64) + (now.getMinutes() / 60 * 64) : null;
+
+                return (
+                  <div key={day.toISOString()} className="flex-1 border-r relative">
+                    {hours.map(hour => (
+                      <div key={hour} className="h-16 border-b hover:bg-gray-50 relative">
+                        {hour !== 23 && <div className="absolute top-1/2 left-0 right-0 border-t border-gray-200"></div>}
+                      </div>
+                    ))}
+
+                    {layoutedEvents.map(event => {
+                      const start = new Date(event.start.dateTime);
+                      const end = new Date(event.end.dateTime);
+                      const top = ((start.getHours() - 6) * 64) + (start.getMinutes() / 60 * 64);
+                      const height = ((end - start) / (1000 * 60 * 60)) * 64;
+
+                      const eventColor = calendarColors[event.calendarId] || event.calendarColor || 'var(--dartmouth-green)';
+
+                      return (
+                        <div
+                          key={event.id}
+                          className="absolute rounded text-xs text-white cursor-pointer overflow-hidden"
+                          style={{
+                            top: `${top}px`,
+                            height: `${height}px`,
+                            left: event.hasOverlap ? `${(event.layoutColumn / event.totalColumns * 100)}%` : '4px',
+                            width: event.hasOverlap ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)',
+                            backgroundColor: eventColor,
+                            border: 'none'
+                          }}
+                          onClick={() => {
+                            setSelectedEvent(event);
+                            setShowEventModal(true);
+                          }}
+                        >
+                          <div className="p-1">
+                            <div className="font-semibold truncate">{event.summary}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {isToday && currentTimeTop !== null && currentTimeTop >= 0 && currentTimeTop <= 18 * 64 && (
+                      <div className="current-time-indicator" style={{ top: `${currentTimeTop}px` }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      };
+
+      const renderWeekView = () => {
+        const startOfWeek = new Date(currentDate);
+        startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
+        const days = Array.from({ length: 7 }, (_, i) => {
+          const day = new Date(startOfWeek);
+          day.setDate(startOfWeek.getDate() + i);
+          return day;
+        });
+
+        const hours = Array.from({ length: 18 }, (_, i) => i + 6);
+        const now = new Date();
+        
+        // Filter events based on showOnlyColumn1 setting
+        const filteredEvents = showOnlyColumn1 && columns.length > 0
+          ? events.filter(event => columns[0].calendarIds.includes(event.calendarId))
+          : events;
+
+        return (
+          <div className="flex-1 overflow-auto">
+            <div className="flex border-b bg-gray-50">
+              <div className="w-16 flex-shrink-0 border-r"></div>
+              {days.map(day => (
+                <div key={day.toISOString()} className="flex-1 p-2 border-r text-center">
+                  <div className="font-semibold">{day.toLocaleDateString('en-US', { weekday: 'short' })}</div>
+                  <div className="text-sm text-gray-600">{day.getDate()}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex">
+              <div className="w-16 flex-shrink-0">
+                {hours.map(hour => (
+                  <div key={hour} className="h-16 border-b text-xs text-gray-500 p-1">
+                    {hour % 12 || 12}{hour >= 12 ? 'PM' : 'AM'}
+                  </div>
+                ))}
+              </div>
+
+              {days.map(day => {
+                const dayEvents = filteredEvents.filter(event => {
+                  const eventDate = new Date(event.start.dateTime || event.start.date);
                   return eventDate.toDateString() === day.toDateString() && event.start.dateTime;
                 });
 
