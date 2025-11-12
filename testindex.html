@@ -1195,16 +1195,7 @@
           </div>
         );
       };
-
-      const renderWeekView = () => {
-        const startOfWeek = new Date(currentDate);
-        startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
-        const days = Array.from({ length: 7 }, (_, i) => {
-          const day = new Date(startOfWeek);
-          day.setDate(startOfWeek.getDate() + i);
-          return day;
-        });
-
+      
         const hours = Array.from({ length: 18 }, (_, i) => i + 6);
         const now = new Date();
         
