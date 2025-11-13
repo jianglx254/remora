@@ -611,46 +611,68 @@
         // Just visual feedback, actual update happens on mouseup
       };
 
-      const handleEventDragEnd = async (e, hour, columnId) => {
-        if (!draggingEvent) return;
-        
-        const rect = e.currentTarget.getBoundingClientRect();
-        const relativeY = e.clientY - rect.top;
-        const totalMinutes = (relativeY / rect.height) * 60;
-        const snappedMinutes = Math.round(totalMinutes / 15) * 15;
-        
+      const handleEventDragEnd = async (e) => {
+        if (!draggingEvent || !dragPosition) return;
+      
+        // Find which column you dropped on
+        const calendarColumns = document.querySelectorAll('.calendar-column');
+        let targetColumn = null;
+        calendarColumns.forEach(col => {
+          const rect = col.getBoundingClientRect();
+          if (
+            dragPosition.x >= rect.left &&
+            dragPosition.x <= rect.right &&
+            dragPosition.y >= rect.top &&
+            dragPosition.y <= rect.bottom
+          ) {
+            targetColumn = { element: col, rect };
+          }
+        });
+        if (!targetColumn) {
+          setDraggingEvent(null);
+          setDragOffset(null);
+          return;
+        }
+      
+        // Calculate drop time
+        const relativeY = dragPosition.y - targetColumn.rect.top;
+        const hourHeight = 64;
+        const hour = Math.floor(relativeY / hourHeight) + visibleHourStart;
+        const minuteInHour = ((relativeY % hourHeight) / hourHeight) * 60;
+        const snappedMinutes = Math.round(minuteInHour / 15) * 15;
+      
         const newStart = new Date(currentDate);
         newStart.setHours(hour, snappedMinutes, 0, 0);
-        
-        const offsetMinutes = Math.round((dragOffset.y / rect.height) * 60 / 15) * 15;
-        newStart.setMinutes(newStart.getMinutes() - offsetMinutes);
-        
-        const originalStart = new Date(draggingEvent.start.dateTime);
-        const originalEnd = new Date(draggingEvent.end.dateTime);
-        const duration = originalEnd - originalStart;
-        
+        const duration =
+          new Date(draggingEvent.end.dateTime) -
+          new Date(draggingEvent.start.dateTime);
         const newEnd = new Date(newStart.getTime() + duration);
-        
-        // Get the calendar for the target column
+      
+        // Determine which calendar this column belongs to
+        const columnId = targetColumn.element.getAttribute('data-column-id');
         const column = columns.find(c => c.id === columnId);
-        const targetCalendarId = column?.calendarIds[0] || draggingEvent.calendarId;
-        
-        // Update the event
+        const targetCalendarId =
+          column?.calendarIds[0] || draggingEvent.calendarId;
+      
+        // Save to Google Calendar
         try {
           const token = localStorage.getItem('google_access_token');
-          
-          // If moving to a different calendar, delete from old and create in new
+      
           if (targetCalendarId !== draggingEvent.calendarId) {
             await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+                draggingEvent.calendarId
+              )}/events/${draggingEvent.id}`,
               {
                 method: 'DELETE',
                 headers: { Authorization: `Bearer ${token}` }
               }
             );
-            
+      
             await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events`,
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+                targetCalendarId
+              )}/events`,
               {
                 method: 'POST',
                 headers: {
@@ -666,9 +688,10 @@
               }
             );
           } else {
-            // Just update the time
             await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(draggingEvent.calendarId)}/events/${draggingEvent.id}`,
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+                draggingEvent.calendarId
+              )}/events/${draggingEvent.id}`,
               {
                 method: 'PUT',
                 headers: {
@@ -684,18 +707,17 @@
               }
             );
           }
-          
-          // Clear cache and reload
+      
           setEventCache({});
           await loadEvents();
         } catch (error) {
           console.error('Error moving event:', error);
         }
-        
+      
         setDraggingEvent(null);
         setDragOffset(null);
       };
-
+      
       const handleMouseMove = (e, hour) => {
         if (isDragging && !draggingEvent) {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -1031,7 +1053,7 @@
                 const layoutedEvents = layoutOverlappingEvents(columnEvents);
                 
                 return (
-                  <div key={column.id} className="flex-1 border-r relative">
+                  <div key={column.id} data-column-id={column.id} className="calendar-column flex-1 border-r relative">
                     {hours.map(hour => (
                       <div
                         key={hour}
