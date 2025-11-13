@@ -139,6 +139,20 @@
                `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
       };
 
+      // Helper to check if a calendar is writable
+      const isCalendarWritable = (calendarId) => {
+        // Check if calendar is read-only (@import.calendar.google.com or insufficient access)
+        if (!calendarId) return false;
+        if (calendarId.includes('@import.calendar.google.com')) return false;
+        
+        const calendar = calendars.find(cal => cal.id === calendarId);
+        if (!calendar) return false;
+        
+        // Only 'owner' and 'writer' roles can write
+        const writableRoles = ['owner', 'writer'];
+        return writableRoles.includes(calendar.accessRole);
+      };
+
       // Helper to get grid context for accurate drag/drop calculations
       const getGridContextForPoint = (x, y) => {
         const calendarColumns = document.querySelectorAll('.calendar-column');
@@ -581,9 +595,20 @@
             await loadEvents();
             setShowEventModal(false);
             setSelectedEvent(null);
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            if (response.status === 403) {
+              setError('Permission denied: Cannot create events in this calendar');
+            } else {
+              setError('Failed to create event');
+            }
+            setTimeout(() => setError(null), 3000);
+            console.error('Error creating event:', errorData);
           }
         } catch (error) {
           console.error('Error creating event:', error);
+          setError('An error occurred while creating the event');
+          setTimeout(() => setError(null), 3000);
         }
       };
 
@@ -626,9 +651,20 @@
             await loadEvents();
             setShowEventModal(false);
             setSelectedEvent(null);
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            if (response.status === 403) {
+              setError('Permission denied: Cannot modify this event');
+            } else {
+              setError('Failed to update event');
+            }
+            setTimeout(() => setError(null), 3000);
+            console.error('Error updating event:', errorData);
           }
         } catch (error) {
           console.error('Error updating event:', error);
+          setError('An error occurred while updating the event');
+          setTimeout(() => setError(null), 3000);
         }
       };
 
@@ -705,6 +741,14 @@
 
       const handleEventDragStart = (e, event) => {
         e.stopPropagation();
+        
+        // Check if the event's calendar is writable
+        if (!isCalendarWritable(event.calendarId)) {
+          setError('Cannot move events from read-only calendars');
+          setTimeout(() => setError(null), 3000);
+          return;
+        }
+        
         const rect = e.currentTarget.getBoundingClientRect();
         setDraggingEvent(event);
         setDragOffset({
@@ -752,6 +796,16 @@
         const targetCalendarId =
           column?.calendarIds[0] || draggingEvent.calendarId;
       
+        // Check if target calendar is writable
+        if (!isCalendarWritable(targetCalendarId)) {
+          setError('Cannot drop events into read-only calendars');
+          setTimeout(() => setError(null), 3000);
+          setDraggingEvent(null);
+          setDragOffset(null);
+          setDragPosition(null);
+          return;
+        }
+      
         // Save to Google Calendar
         try {
           const token = localStorage.getItem('google_access_token');
@@ -788,7 +842,14 @@
             );
             
             if (!createResponse.ok) {
-              console.error('Failed to create event on target calendar');
+              const errorData = await createResponse.json().catch(() => ({}));
+              if (createResponse.status === 403) {
+                setError('Permission denied: Cannot write to this calendar');
+              } else {
+                setError('Failed to move event to target calendar');
+              }
+              setTimeout(() => setError(null), 3000);
+              console.error('Failed to create event on target calendar:', errorData);
               setDraggingEvent(null);
               setDragOffset(null);
               setDragPosition(null);
@@ -807,7 +868,7 @@
             );
           } else {
             // Within-calendar move: use PUT to update
-            await fetch(
+            const updateResponse = await fetch(
               `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
                 draggingEvent.calendarId
               )}/events/${draggingEvent.id}`,
@@ -831,12 +892,29 @@
                 })
               }
             );
+            
+            if (!updateResponse.ok) {
+              const errorData = await updateResponse.json().catch(() => ({}));
+              if (updateResponse.status === 403) {
+                setError('Permission denied: Cannot modify this event');
+              } else {
+                setError('Failed to update event');
+              }
+              setTimeout(() => setError(null), 3000);
+              console.error('Failed to update event:', errorData);
+              setDraggingEvent(null);
+              setDragOffset(null);
+              setDragPosition(null);
+              return;
+            }
           }
       
           setEventCache({});
           await loadEvents();
         } catch (error) {
           console.error('Error moving event:', error);
+          setError('An error occurred while moving the event');
+          setTimeout(() => setError(null), 3000);
         }
       
         setDraggingEvent(null);
@@ -951,6 +1029,15 @@
 
         const column = columns.find(c => c.id === dragStart.columnId);
         const calendarId = column?.calendarIds[0] || defaultCalendar;
+        
+        // Check if target calendar is writable
+        if (!isCalendarWritable(calendarId)) {
+          setError('Cannot create events in read-only calendars');
+          setTimeout(() => setError(null), 3000);
+          setDragStart(null);
+          setDragEnd(null);
+          return;
+        }
 
         setSelectedEvent({
           start: toLocalDateTimeString(start),
