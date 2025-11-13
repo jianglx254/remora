@@ -130,6 +130,13 @@
       const [calendarColors, setCalendarColors] = useState({});
       const clientId = '788943371871-n713sgr9t3oifkev2abln7615eulgbv4.apps.googleusercontent.com';
 
+      // Helper function to format a Date as a local RFC3339-like string without timezone
+      const toLocalDateTimeString = (date) => {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}` +
+               `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+      };
+
       // Update current time every minute
       useEffect(() => {
         const interval = setInterval(() => {
@@ -203,7 +210,7 @@
         
         const savedTimeZoneOffset = localStorage.getItem('timezone_offset');
         if (savedTimeZoneOffset !== null) {
-          setTimeZoneOffset(parseInt(savedTimeZoneOffset));
+          setTimeZoneOffset(parseFloat(savedTimeZoneOffset));
         }
         
         const savedVisibleHourStart = localStorage.getItem('visible_hour_start');
@@ -467,12 +474,13 @@
           const token = localStorage.getItem('google_access_token');
           const calendarId = eventData.calendarId || defaultCalendar;
           
-          // Apply timezone offset to the times being sent to Google
-          const startTime = new Date(eventData.start);
-          startTime.setHours(startTime.getHours() - timeZoneOffset);
+          // Get the calendar's timeZone
+          const calendar = calendars.find(cal => cal.id === calendarId);
+          const timeZone = calendar?.timeZone || 'America/New_York';
           
+          // Convert to local datetime strings (no timezone conversion needed)
+          const startTime = new Date(eventData.start);
           const endTime = new Date(eventData.end);
-          endTime.setHours(endTime.getHours() - timeZoneOffset);
           
           const response = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
@@ -485,8 +493,14 @@
               body: JSON.stringify({
                 summary: eventData.title,
                 description: eventData.description,
-                start: { dateTime: startTime.toISOString() },
-                end: { dateTime: endTime.toISOString() }
+                start: { 
+                  dateTime: toLocalDateTimeString(startTime),
+                  timeZone: timeZone
+                },
+                end: { 
+                  dateTime: toLocalDateTimeString(endTime),
+                  timeZone: timeZone
+                }
               })
             }
           );
@@ -505,6 +519,14 @@
         try {
           const token = localStorage.getItem('google_access_token');
           
+          // Get the calendar's timeZone
+          const calendar = calendars.find(cal => cal.id === eventData.calendarId);
+          const timeZone = calendar?.timeZone || 'America/New_York';
+          
+          // Convert to local datetime strings (no timezone conversion needed)
+          const startTime = new Date(eventData.start);
+          const endTime = new Date(eventData.end);
+          
           const response = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventData.calendarId)}/events/${eventData.id}`,
             {
@@ -516,8 +538,14 @@
               body: JSON.stringify({
                 summary: eventData.title,
                 description: eventData.description,
-                start: { dateTime: eventData.start },
-                end: { dateTime: eventData.end }
+                start: { 
+                  dateTime: toLocalDateTimeString(startTime),
+                  timeZone: timeZone
+                },
+                end: { 
+                  dateTime: toLocalDateTimeString(endTime),
+                  timeZone: timeZone
+                }
               })
             }
           );
@@ -657,6 +685,10 @@
         // Save to Google Calendar
         try {
           const token = localStorage.getItem('google_access_token');
+          
+          // Get the target calendar's timeZone
+          const targetCalendar = calendars.find(cal => cal.id === targetCalendarId);
+          const timeZone = targetCalendar?.timeZone || 'America/New_York';
       
           if (targetCalendarId !== draggingEvent.calendarId) {
             await fetch(
@@ -682,8 +714,14 @@
                 body: JSON.stringify({
                   summary: draggingEvent.summary,
                   description: draggingEvent.description,
-                  start: { dateTime: newStart.toISOString() },
-                  end: { dateTime: newEnd.toISOString() }
+                  start: { 
+                    dateTime: toLocalDateTimeString(newStart),
+                    timeZone: timeZone
+                  },
+                  end: { 
+                    dateTime: toLocalDateTimeString(newEnd),
+                    timeZone: timeZone
+                  }
                 })
               }
             );
@@ -701,8 +739,14 @@
                 body: JSON.stringify({
                   summary: draggingEvent.summary,
                   description: draggingEvent.description,
-                  start: { dateTime: newStart.toISOString() },
-                  end: { dateTime: newEnd.toISOString() }
+                  start: { 
+                    dateTime: toLocalDateTimeString(newStart),
+                    timeZone: timeZone
+                  },
+                  end: { 
+                    dateTime: toLocalDateTimeString(newEnd),
+                    timeZone: timeZone
+                  }
                 })
               }
             );
@@ -757,7 +801,7 @@
         const minuteInHour = ((relativeY % hourHeight) / hourHeight) * 60;
         const snappedMinutes = Math.round(minuteInHour / 15) * 15;
         
-        const top = (hourIndex * hourHeight) + (snappedMinutes / 60 * hourHeight);
+        const top = targetColumn.rect.top + (hourIndex * hourHeight) + (snappedMinutes / 60 * hourHeight);
         const originalStart = new Date(draggingEvent.start.dateTime);
         const originalEnd = new Date(draggingEvent.end.dateTime);
         const duration = (originalEnd - originalStart) / (1000 * 60 * 60); // in hours
