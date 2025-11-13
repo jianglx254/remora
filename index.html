@@ -137,6 +137,38 @@
                `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
       };
 
+      // Helper to get grid context for accurate drag/drop calculations
+      const getGridContextForPoint = (x, y) => {
+        const calendarColumns = document.querySelectorAll('.calendar-column');
+        let targetColumn = null;
+        
+        calendarColumns.forEach((col) => {
+          const rect = col.getBoundingClientRect();
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            targetColumn = col;
+          }
+        });
+        
+        if (!targetColumn) return null;
+        
+        // Prefer the scrollable time-grid element if it exists
+        const timeGrid = targetColumn.querySelector('.time-grid');
+        const gridElement = timeGrid || targetColumn;
+        const gridRect = gridElement.getBoundingClientRect();
+        const scrollTop = gridElement.scrollTop || 0;
+        
+        // Measure hourHeight from first hour slot if available
+        const firstHourSlot = targetColumn.querySelector('[data-hour-slot]');
+        const hourHeight = firstHourSlot ? firstHourSlot.getBoundingClientRect().height : 64;
+        
+        return {
+          targetColumn,
+          gridRect,
+          scrollTop,
+          hourHeight
+        };
+      };
+
       // Update current time every minute
       useEffect(() => {
         const interval = setInterval(() => {
@@ -474,9 +506,9 @@
           const token = localStorage.getItem('google_access_token');
           const calendarId = eventData.calendarId || defaultCalendar;
           
-          // Get the calendar's timeZone
+          // Get the calendar's timeZone, fallback to browser's timezone
           const calendar = calendars.find(cal => cal.id === calendarId);
-          const timeZone = calendar?.timeZone || 'America/New_York';
+          const timeZone = calendar?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
           
           // Convert to local datetime strings (no timezone conversion needed)
           const startTime = new Date(eventData.start);
@@ -519,9 +551,9 @@
         try {
           const token = localStorage.getItem('google_access_token');
           
-          // Get the calendar's timeZone
+          // Get the calendar's timeZone, fallback to browser's timezone
           const calendar = calendars.find(cal => cal.id === eventData.calendarId);
-          const timeZone = calendar?.timeZone || 'America/New_York';
+          const timeZone = calendar?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
           
           // Convert to local datetime strings (no timezone conversion needed)
           const startTime = new Date(eventData.start);
@@ -642,42 +674,33 @@
       const handleEventDragEnd = async (e) => {
         if (!draggingEvent || !dragPosition) return;
       
-        // Find which column you dropped on
-        const calendarColumns = document.querySelectorAll('.calendar-column');
-        let targetColumn = null;
-        calendarColumns.forEach(col => {
-          const rect = col.getBoundingClientRect();
-          if (
-            dragPosition.x >= rect.left &&
-            dragPosition.x <= rect.right &&
-            dragPosition.y >= rect.top &&
-            dragPosition.y <= rect.bottom
-          ) {
-            targetColumn = { element: col, rect };
-          }
-        });
-        if (!targetColumn) {
+        const gridContext = getGridContextForPoint(dragPosition.x, dragPosition.y);
+        if (!gridContext) {
           setDraggingEvent(null);
           setDragOffset(null);
+          setDragPosition(null);
           return;
         }
+        
+        const { targetColumn, gridRect, scrollTop, hourHeight } = gridContext;
       
-        // Calculate drop time
-        const relativeY = dragPosition.y - targetColumn.rect.top;
-        const hourHeight = 64;
-        const hour = Math.floor(relativeY / hourHeight) + visibleHourStart;
+        // Calculate drop time using grid context
+        const relativeY = dragPosition.y - gridRect.top + scrollTop;
+        const hourIndex = Math.floor(relativeY / hourHeight);
         const minuteInHour = ((relativeY % hourHeight) / hourHeight) * 60;
         const snappedMinutes = Math.round(minuteInHour / 15) * 15;
       
+        const hour = hourIndex + visibleHourStart;
         const newStart = new Date(currentDate);
         newStart.setHours(hour, snappedMinutes, 0, 0);
+        
         const duration =
           new Date(draggingEvent.end.dateTime) -
           new Date(draggingEvent.start.dateTime);
         const newEnd = new Date(newStart.getTime() + duration);
       
         // Determine which calendar this column belongs to
-        const columnId = targetColumn.element.getAttribute('data-column-id');
+        const columnId = targetColumn.getAttribute('data-column-id');
         const column = columns.find(c => c.id === columnId);
         const targetCalendarId =
           column?.calendarIds[0] || draggingEvent.calendarId;
@@ -688,20 +711,11 @@
           
           // Get the target calendar's timeZone
           const targetCalendar = calendars.find(cal => cal.id === targetCalendarId);
-          const timeZone = targetCalendar?.timeZone || 'America/New_York';
+          const timeZone = targetCalendar?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
       
           if (targetCalendarId !== draggingEvent.calendarId) {
-            await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-                draggingEvent.calendarId
-              )}/events/${draggingEvent.id}`,
-              {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
-              }
-            );
-      
-            await fetch(
+            // Cross-calendar move: copy first, then delete only if copy succeeds
+            const createResponse = await fetch(
               `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
                 targetCalendarId
               )}/events`,
@@ -725,7 +739,27 @@
                 })
               }
             );
+            
+            if (!createResponse.ok) {
+              console.error('Failed to create event on target calendar');
+              setDraggingEvent(null);
+              setDragOffset(null);
+              setDragPosition(null);
+              return;
+            }
+            
+            // Only delete original event if creation succeeded
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+                draggingEvent.calendarId
+              )}/events/${draggingEvent.id}`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+              }
+            );
           } else {
+            // Within-calendar move: use PUT to update
             await fetch(
               `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
                 draggingEvent.calendarId
@@ -760,6 +794,7 @@
       
         setDraggingEvent(null);
         setDragOffset(null);
+        setDragPosition(null);
       };
       
       const handleMouseMove = (e, hour) => {
@@ -782,36 +817,32 @@
       const getDropPreviewPosition = () => {
         if (!draggingEvent || !dragPosition) return null;
         
-        const calendarColumns = document.querySelectorAll('.calendar-column');
-        let targetColumn = null;
+        const gridContext = getGridContextForPoint(dragPosition.x, dragPosition.y);
+        if (!gridContext) return null;
         
-        calendarColumns.forEach((col) => {
-          const rect = col.getBoundingClientRect();
-          if (dragPosition.x >= rect.left && dragPosition.x <= rect.right &&
-              dragPosition.y >= rect.top && dragPosition.y <= rect.bottom) {
-            targetColumn = { element: col, rect };
-          }
-        });
+        const { targetColumn, gridRect, scrollTop, hourHeight } = gridContext;
         
-        if (!targetColumn) return null;
-        
-        const relativeY = dragPosition.y - targetColumn.rect.top;
-        const hourHeight = 64;
+        // Calculate relative position within the scrollable grid
+        const relativeY = dragPosition.y - gridRect.top + scrollTop;
         const hourIndex = Math.floor(relativeY / hourHeight);
         const minuteInHour = ((relativeY % hourHeight) / hourHeight) * 60;
         const snappedMinutes = Math.round(minuteInHour / 15) * 15;
         
-        const top = targetColumn.rect.top + (hourIndex * hourHeight) + (snappedMinutes / 60 * hourHeight);
+        // Position preview using viewport coordinates
+        const top = gridRect.top + (hourIndex * hourHeight) + (snappedMinutes / 60 * hourHeight) - scrollTop;
         const originalStart = new Date(draggingEvent.start.dateTime);
         const originalEnd = new Date(draggingEvent.end.dateTime);
         const duration = (originalEnd - originalStart) / (1000 * 60 * 60); // in hours
         const height = duration * hourHeight;
         
+        // Use the column's bounding rect for positioning
+        const colRect = targetColumn.getBoundingClientRect();
+        
         return {
           top,
           height,
-          left: targetColumn.rect.left,
-          width: targetColumn.rect.width
+          left: colRect.left,
+          width: colRect.width
         };
       };
 
@@ -875,8 +906,8 @@
         const calendarId = column?.calendarIds[0] || defaultCalendar;
 
         setSelectedEvent({
-          start: start.toISOString(),
-          end: end.toISOString(),
+          start: toLocalDateTimeString(start),
+          end: toLocalDateTimeString(end),
           calendarId: calendarId
         });
         setShowEventModal(true);
@@ -1098,23 +1129,26 @@
                 
                 return (
                   <div key={column.id} data-column-id={column.id} className="calendar-column flex-1 border-r relative">
-                    {hours.map(hour => (
-                      <div
-                        key={hour}
-                        className="h-16 border-b hover:bg-gray-50 cursor-crosshair relative"
-                        onMouseDown={(e) => handleMouseDown(e, hour, column.id)}
-                        onMouseMove={(e) => {
-                          handleMouseMove(e, hour);
-                          handleEventDrag(e, hour);
-                        }}
-                        onMouseUp={(e) => {
-                          handleMouseUp();
-                          handleEventDragEnd(e, hour, column.id);
-                        }}
-                      >
-                        {hour !== 23 && <div className="absolute top-1/2 left-0 right-0 border-t border-gray-200"></div>}
-                      </div>
-                    ))}
+                    <div className="time-grid">
+                      {hours.map(hour => (
+                        <div
+                          key={hour}
+                          data-hour-slot={hour}
+                          className="h-16 border-b hover:bg-gray-50 cursor-crosshair relative"
+                          onMouseDown={(e) => handleMouseDown(e, hour, column.id)}
+                          onMouseMove={(e) => {
+                            handleMouseMove(e, hour);
+                            handleEventDrag(e, hour);
+                          }}
+                          onMouseUp={(e) => {
+                            handleMouseUp();
+                            handleEventDragEnd(e, hour, column.id);
+                          }}
+                        >
+                          {hour !== 23 && <div className="absolute top-1/2 left-0 right-0 border-t border-gray-200"></div>}
+                        </div>
+                      ))}
+                    </div>
                     
                     {layoutedEvents.map(event => {
                       if (hiddenEvents.has(event.id)) return null;
