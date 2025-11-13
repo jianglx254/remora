@@ -2236,13 +2236,25 @@
       const [description, setDescription] = React.useState(event?.description || '');
       const getStartTime = () => {
         if (event?.start?.dateTime) return event.start.dateTime.slice(0, 16);
-        if (event?.start) return new Date(event.start).toISOString().slice(0, 16);
+        // If event.start is a string in local datetime format, just slice it
+        if (typeof event?.start === 'string') return event.start.slice(0, 16);
+        // If event.start is a Date object, format it as local time
+        if (event?.start instanceof Date) {
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${event.start.getFullYear()}-${pad(event.start.getMonth()+1)}-${pad(event.start.getDate())}T${pad(event.start.getHours())}:${pad(event.start.getMinutes())}`;
+        }
         return '';
       };
       
       const getEndTime = () => {
         if (event?.end?.dateTime) return event.end.dateTime.slice(0, 16);
-        if (event?.end) return new Date(event.end).toISOString().slice(0, 16);
+        // If event.end is a string in local datetime format, just slice it
+        if (typeof event?.end === 'string') return event.end.slice(0, 16);
+        // If event.end is a Date object, format it as local time
+        if (event?.end instanceof Date) {
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${event.end.getFullYear()}-${pad(event.end.getMonth()+1)}-${pad(event.end.getDate())}T${pad(event.end.getHours())}:${pad(event.end.getMinutes())}`;
+        }
         return '';
       };
 
@@ -2253,11 +2265,16 @@
       return (
         <form onSubmit={(e) => {
           e.preventDefault();
+          // Parse the datetime-local input values as local time
+          // Format: "YYYY-MM-DDTHH:mm" from datetime-local input
+          const startDate = new Date(start + ':00'); // Add seconds for full format
+          const endDate = new Date(end + ':00');
+          
           onSave({ 
             title, 
             description, 
-            start: new Date(start).toISOString(), 
-            end: new Date(end).toISOString(), 
+            start: startDate, 
+            end: endDate, 
             calendarId 
           });
         }} className="space-y-4">
