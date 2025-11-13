@@ -519,6 +519,14 @@
         try {
           const token = localStorage.getItem('google_access_token');
           
+          // Get the calendar's timeZone
+          const calendar = calendars.find(cal => cal.id === eventData.calendarId);
+          const timeZone = calendar?.timeZone || 'America/New_York';
+          
+          // Convert to local datetime strings (no timezone conversion needed)
+          const startTime = new Date(eventData.start);
+          const endTime = new Date(eventData.end);
+          
           const response = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(eventData.calendarId)}/events/${eventData.id}`,
             {
@@ -530,8 +538,14 @@
               body: JSON.stringify({
                 summary: eventData.title,
                 description: eventData.description,
-                start: { dateTime: eventData.start },
-                end: { dateTime: eventData.end }
+                start: { 
+                  dateTime: toLocalDateTimeString(startTime),
+                  timeZone: timeZone
+                },
+                end: { 
+                  dateTime: toLocalDateTimeString(endTime),
+                  timeZone: timeZone
+                }
               })
             }
           );
