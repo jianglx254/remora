@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Remora Calendar</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path fill='%2300693E' d='M32 8 C20 8, 12 16, 12 28 C12 36, 16 42, 22 46 L20 56 L32 50 L44 56 L42 46 C48 42, 52 36, 52 28 C52 16, 44 8, 32 8 M32 12 C42 12, 48 18, 48 28 C48 34, 45 39, 40 42 L38 44 L39 50 L32 46 L25 50 L26 44 L24 42 C19 39, 16 34, 16 28 C16 18, 22 12, 32 12'/><ellipse fill='%2300693E' cx='26' cy='26' rx='3' ry='4'/><ellipse fill='%2300693E' cx='38' cy='26' rx='3' ry='4'/><path stroke='%2300693E' stroke-width='2' fill='none' d='M24 32 Q32 36 40 32'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cpath%20fill='%2300693E'%20d='M32%208%20C20%208%2012%2016%2012%2028%20C12%2036%2016%2042%2022%2046%20L20%2056%20L32%2050%20L44%2056%20L42%2046%20C48%2042%2052%2036%2052%2028%20C52%2016%2044%208%2032%208%20M32%2012%20C42%2012%2048%2018%2048%2028%20C48%2034%2045%2039%2040%2042%20L38%2044%20L39%2050%20L32%2046%20L25%2050%20L26%2044%20L24%2042%20C19%2039%2016%2034%2016%2028%20C16%2018%2022%2012%2032%2012'%2F%3E%3Cellipse%20fill='%2300693E'%20cx='26'%20cy='26'%20rx='3'%20ry='4'%2F%3E%3Cellipse%20fill='%2300693E'%20cx='38'%20cy='26'%20rx='3'%20ry='4'%2F%3E%3Cpath%20stroke='%2300693E'%20stroke-width='2'%20fill='none'%20d='M24%2032%20Q32%2036%2040%2032'%2F%3E%3C%2Fsvg%3E">
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -122,9 +122,12 @@
       const [eventCache, setEventCache] = useState({});
       const [showOnlyColumn1, setShowOnlyColumn1] = useState(false);
       const [hiddenEvents, setHiddenEvents] = useState(new Set());
-      const [timeZoneOffset, setTimeZoneOffset] = useState(0);
+      const [timeZoneOffset, setTimeZoneOffset] = useState(-4.5);
       const [visibleHourStart, setVisibleHourStart] = useState(6);
       const [visibleHourEnd, setVisibleHourEnd] = useState(23);
+      const [hiddenCalendars, setHiddenCalendars] = useState(new Set());
+      const [editingCalendarColor, setEditingCalendarColor] = useState(null);
+      const [calendarColors, setCalendarColors] = useState({});
       const clientId = '788943371871-n713sgr9t3oifkev2abln7615eulgbv4.apps.googleusercontent.com';
 
       // Update current time every minute
@@ -146,6 +149,28 @@
         window.addEventListener('keydown', handleKeyPress);
         return () => window.removeEventListener('keydown', handleKeyPress);
       }, []);
+
+      // Global mouse up handler for drag end
+      useEffect(() => {
+        const handleGlobalMouseUp = (e) => {
+          if (draggingEvent) {
+            handleEventDragEnd(e, null);
+          }
+        };
+        
+        const handleGlobalMouseMove = (e) => {
+          if (draggingEvent && dragOffset) {
+            setDragPosition({ x: e.clientX, y: e.clientY });
+          }
+        };
+        
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        window.addEventListener('mousemove', handleGlobalMouseMove);
+        return () => {
+          window.removeEventListener('mouseup', handleGlobalMouseUp);
+          window.removeEventListener('mousemove', handleGlobalMouseMove);
+        };
+      }, [draggingEvent, dragOffset]);
 
       useEffect(() => {
         const hash = window.location.hash;
@@ -189,6 +214,16 @@
         const savedVisibleHourEnd = localStorage.getItem('visible_hour_end');
         if (savedVisibleHourEnd !== null) {
           setVisibleHourEnd(parseInt(savedVisibleHourEnd));
+        }
+        
+        const savedHiddenCalendars = localStorage.getItem('hidden_calendars');
+        if (savedHiddenCalendars) {
+          setHiddenCalendars(new Set(JSON.parse(savedHiddenCalendars)));
+        }
+        
+        const savedCalendarColors = localStorage.getItem('calendar_colors');
+        if (savedCalendarColors) {
+          setCalendarColors(JSON.parse(savedCalendarColors));
         }
       }, []);
 
@@ -258,6 +293,17 @@
           
           const data = await response.json();
           setCalendars(data.items || []);
+          
+          // Store colors locally on first load (desync from Google)
+          const savedColors = localStorage.getItem('calendar_colors');
+          if (!savedColors && data.items) {
+            const initialColors = {};
+            data.items.forEach(cal => {
+              initialColors[cal.id] = cal.backgroundColor;
+            });
+            setCalendarColors(initialColors);
+            localStorage.setItem('calendar_colors', JSON.stringify(initialColors));
+          }
           
           const savedColumns = localStorage.getItem('calendar_columns');
           if (savedColumns) {
@@ -421,6 +467,13 @@
           const token = localStorage.getItem('google_access_token');
           const calendarId = eventData.calendarId || defaultCalendar;
           
+          // Apply timezone offset to the times being sent to Google
+          const startTime = new Date(eventData.start);
+          startTime.setHours(startTime.getHours() - timeZoneOffset);
+          
+          const endTime = new Date(eventData.end);
+          endTime.setHours(endTime.getHours() - timeZoneOffset);
+          
           const response = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
             {
@@ -432,8 +485,8 @@
               body: JSON.stringify({
                 summary: eventData.title,
                 description: eventData.description,
-                start: { dateTime: eventData.start },
-                end: { dateTime: eventData.end }
+                start: { dateTime: startTime.toISOString() },
+                end: { dateTime: endTime.toISOString() }
               })
             }
           );
@@ -536,8 +589,7 @@
         const snappedMinutes = Math.round(totalMinutes / 15) * 15;
         
         const start = new Date(currentDate);
-        // Apply timezone offset only for event creation
-        start.setHours(hour - timeZoneOffset, snappedMinutes, 0, 0);
+        start.setHours(hour, snappedMinutes, 0, 0);
         
         setIsDragging(true);
         setDragStart({ time: start, columnId });
@@ -652,13 +704,49 @@
           const snappedMinutes = Math.round(totalMinutes / 15) * 15;
           
           const end = new Date(currentDate);
-          end.setHours(hour - timeZoneOffset, snappedMinutes, 0, 0);
+          end.setHours(hour, snappedMinutes, 0, 0);
           setDragEnd({ time: end, columnId: dragStart.columnId });
         }
         
         if (draggingEvent && dragOffset) {
           setDragPosition({ x: e.clientX, y: e.clientY });
         }
+      };
+
+      const getDropPreviewPosition = () => {
+        if (!draggingEvent || !dragPosition) return null;
+        
+        const calendarColumns = document.querySelectorAll('.calendar-column');
+        let targetColumn = null;
+        
+        calendarColumns.forEach((col) => {
+          const rect = col.getBoundingClientRect();
+          if (dragPosition.x >= rect.left && dragPosition.x <= rect.right &&
+              dragPosition.y >= rect.top && dragPosition.y <= rect.bottom) {
+            targetColumn = { element: col, rect };
+          }
+        });
+        
+        if (!targetColumn) return null;
+        
+        const relativeY = dragPosition.y - targetColumn.rect.top;
+        const hourHeight = 64;
+        const hourIndex = Math.floor(relativeY / hourHeight);
+        const minuteInHour = ((relativeY % hourHeight) / hourHeight) * 60;
+        const snappedMinutes = Math.round(minuteInHour / 15) * 15;
+        
+        const top = (hourIndex * hourHeight) + (snappedMinutes / 60 * hourHeight);
+        const originalStart = new Date(draggingEvent.start.dateTime);
+        const originalEnd = new Date(draggingEvent.end.dateTime);
+        const duration = (originalEnd - originalStart) / (1000 * 60 * 60); // in hours
+        const height = duration * hourHeight;
+        
+        return {
+          top,
+          height,
+          left: targetColumn.rect.left,
+          width: targetColumn.rect.width
+        };
       };
 
       const findOverlappingEventsInColumn = (event, columnEvents) => {
@@ -874,7 +962,9 @@
         const hours = Array.from({ length: visibleHourEnd - visibleHourStart + 1 }, (_, i) => i + visibleHourStart);
         const dayEvents = events.filter(event => {
           const eventDate = new Date(event.start.dateTime || event.start.date);
-          return eventDate.toDateString() === currentDate.toDateString() && !hiddenEvents.has(event.id);
+          return eventDate.toDateString() === currentDate.toDateString() && 
+                 !hiddenEvents.has(event.id) &&
+                 !hiddenCalendars.has(event.calendarId);
         });
 
         const allDayEvents = dayEvents.filter(event => !event.start.dateTime);
@@ -883,7 +973,7 @@
 
         const now = new Date();
         const isToday = currentDate.toDateString() === now.toDateString();
-        const currentTimeTop = isToday ? ((now.getHours() + timeZoneOffset - visibleHourStart) * 64) + (now.getMinutes() / 60 * 64) : null;
+        const currentTimeTop = isToday ? ((now.getHours() - visibleHourStart) * 64) + (now.getMinutes() / 60 * 64) : null;
 
         return (
           <div className="flex-1 overflow-auto">
@@ -966,13 +1056,9 @@
                       const start = new Date(event.start.dateTime);
                       const end = new Date(event.end.dateTime);
                       
-                      // Apply timezone offset
-                      const adjustedStartHour = start.getHours() + timeZoneOffset;
-                      const adjustedEndHour = end.getHours() + timeZoneOffset;
-                      
-                      // Clip to visible range
-                      const topHour = Math.max(adjustedStartHour, visibleHourStart);
-                      const bottomHour = Math.min(adjustedEndHour, visibleHourEnd);
+                      // Don't apply any offset to displayed events
+                      const topHour = Math.max(start.getHours(), visibleHourStart);
+                      const bottomHour = Math.min(end.getHours(), visibleHourEnd);
                       
                       // Skip if completely out of range
                       if (bottomHour <= visibleHourStart || topHour >= visibleHourEnd) return null;
@@ -991,10 +1077,10 @@
                       // Check if this event is being merged
                       const isMergingOut = mergingEvents?.shorter?.id === event.id;
                       
-                      let backgroundColor = event.calendarColor || 'var(--dartmouth-green)';
+                      let backgroundColor = calendarColors[event.calendarId] || event.calendarColor || 'var(--dartmouth-green)';
                       
                       if (isInGroup && groupCalendars.length > 1) {
-                        const colors = groupCalendars.map(id => calendars.find(c => c.id === id)?.backgroundColor || 'var(--dartmouth-green)');
+                        const colors = groupCalendars.map(id => calendarColors[id] || calendars.find(c => c.id === id)?.backgroundColor || 'var(--dartmouth-green)');
                         backgroundColor = `linear-gradient(90deg, ${colors.join(', ')})`;
                       }
                       
@@ -1082,6 +1168,30 @@
                 );
               })}
             </div>
+            
+            {/* Drag preview indicator */}
+            {draggingEvent && dragPosition && (() => {
+              const previewPos = getDropPreviewPosition();
+              if (!previewPos) return null;
+              
+              const eventColor = calendarColors[draggingEvent.calendarId] || draggingEvent.calendarColor || 'var(--dartmouth-green)';
+              
+              return (
+                <div
+                  className="fixed rounded pointer-events-none"
+                  style={{
+                    top: `${previewPos.top}px`,
+                    left: `${previewPos.left}px`,
+                    width: `${previewPos.width - 8}px`,
+                    height: `${previewPos.height}px`,
+                    backgroundColor: eventColor,
+                    opacity: 0.3,
+                    border: `2px dashed ${eventColor}`,
+                    zIndex: 999
+                  }}
+                />
+              );
+            })()}
           </div>
         );
       };
@@ -1328,27 +1438,83 @@
               <h3 className="font-semibold mb-3 text-sm">My Calendars</h3>
               <div className="space-y-2">
                 {calendars.map(cal => (
-                  <div key={cal.id} className="flex items-center gap-2 hover:bg-gray-50 p-1.5 rounded">
+                  <div key={cal.id} className="flex items-center gap-2 hover:bg-gray-50 p-1.5 rounded relative">
                     <div
-                      className="w-3 h-3 rounded cursor-pointer"
-                      style={{ backgroundColor: cal.backgroundColor }}
-                      title="Calendar color"
+                      className="w-3 h-3 rounded cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-gray-400 flex-shrink-0"
+                      style={{ backgroundColor: calendarColors[cal.id] || cal.backgroundColor }}
+                      title="Change calendar color"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingCalendarColor(editingCalendarColor === cal.id ? null : cal.id);
+                      }}
                     />
                     <span className="text-sm flex-1 truncate">{cal.summary}</span>
                     <button
                       onClick={() => {
-                        // Toggle calendar visibility logic here
+                        const newHidden = new Set(hiddenCalendars);
+                        if (newHidden.has(cal.id)) {
+                          newHidden.delete(cal.id);
+                        } else {
+                          newHidden.add(cal.id);
+                        }
+                        setHiddenCalendars(newHidden);
+                        localStorage.setItem('hidden_calendars', JSON.stringify([...newHidden]));
                       }}
-                      className="text-gray-400 hover:text-gray-600"
-                      title="Toggle visibility"
+                      className={`flex-shrink-0 ${hiddenCalendars.has(cal.id) ? 'text-gray-300' : 'text-gray-600'} hover:text-gray-800`}
+                      title={hiddenCalendars.has(cal.id) ? 'Show calendar' : 'Hide calendar'}
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                      </svg>
+                      {hiddenCalendars.has(cal.id) ? (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                      )}
                     </button>
                   </div>
                 ))}
+                
+                {editingCalendarColor && (
+                  <div className="fixed left-72 bg-white border rounded shadow-xl p-4 z-50" style={{ top: '50%', transform: 'translateY(-50%)' }}>
+                    <h4 className="font-semibold mb-3 text-sm">Choose Color</h4>
+                    <div className="mb-3">
+                      <input
+                        type="color"
+                        value={calendarColors[editingCalendarColor] || calendars.find(c => c.id === editingCalendarColor)?.backgroundColor || '#3F51B5'}
+                        onChange={(e) => {
+                          const newColors = { ...calendarColors, [editingCalendarColor]: e.target.value };
+                          setCalendarColors(newColors);
+                          localStorage.setItem('calendar_colors', JSON.stringify(newColors));
+                        }}
+                        className="w-full h-10 cursor-pointer"
+                      />
+                    </div>
+                    <div className="grid grid-cols-6 gap-2 mb-3">
+                      {['#D32F2F', '#E67C73', '#F4511E', '#F6BF26', '#33B679', '#0B8043', 
+                        '#039BE5', '#3F51B5', '#7986CB', '#8E24AA', '#616161', '#A79B8E'].map(color => (
+                        <button
+                          key={color}
+                          className="w-8 h-8 rounded hover:ring-2 hover:ring-offset-1 hover:ring-gray-400"
+                          style={{ backgroundColor: color }}
+                          onClick={() => {
+                            const newColors = { ...calendarColors, [editingCalendarColor]: color };
+                            setCalendarColors(newColors);
+                            localStorage.setItem('calendar_colors', JSON.stringify(newColors));
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setEditingCalendarColor(null)}
+                      className="w-full text-sm px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200"
+                    >
+                      Done
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
