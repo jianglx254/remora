@@ -27,7 +27,7 @@
       background-color: #DC2626;
       z-index: 10;
       pointer-events: none;
-    }
+    }const handleEventD
     .current-time-indicator::before {
       content: '';
       position: absolute;
@@ -242,24 +242,29 @@
       useEffect(() => {
         const handleGlobalMouseUp = (e) => {
           if (draggingEvent) {
+            e.preventDefault();  // ADD THIS
+            e.stopPropagation();  // ADD THIS
             handleEventDragEnd(e, null);
           }
         };
         
         const handleGlobalMouseMove = (e) => {
           if (draggingEvent && dragOffset) {
+            e.preventDefault();  // ADD THIS
             setDragPosition({ x: e.clientX, y: e.clientY });
           }
         };
         
-        window.addEventListener('mouseup', handleGlobalMouseUp);
-        window.addEventListener('mousemove', handleGlobalMouseMove);
-        return () => {
-          window.removeEventListener('mouseup', handleGlobalMouseUp);
-          window.removeEventListener('mousemove', handleGlobalMouseMove);
-        };
+        if (draggingEvent) {  // ADD THIS CONDITIONAL
+          window.addEventListener('mouseup', handleGlobalMouseUp, true);  // ADD true
+          window.addEventListener('mousemove', handleGlobalMouseMove, true);  // ADD true
+          return () => {
+            window.removeEventListener('mouseup', handleGlobalMouseUp, true);
+            window.removeEventListener('mousemove', handleGlobalMouseMove, true);
+          };
+        }
       }, [draggingEvent, dragOffset]);
-
+      
       useEffect(() => {
         const hash = window.location.hash;
         if (hash) {
@@ -741,20 +746,20 @@
 
       const handleEventDragStart = (e, event) => {
         e.stopPropagation();
-        
+        e.preventDefault();  // ADD THIS LINE
         // Check if the event's calendar is writable
         if (!isCalendarWritable(event.calendarId)) {
           setError('Cannot move events from read-only calendars');
           setTimeout(() => setError(null), 3000);
           return;
         }
-        
         const rect = e.currentTarget.getBoundingClientRect();
         setDraggingEvent(event);
         setDragOffset({
           x: e.clientX - rect.left,
           y: e.clientY - rect.top
         });
+        setDragPosition({ x: e.clientX, y: e.clientY });  // ADD THIS LINE
       };
 
       const handleEventDrag = (e, hour) => {
@@ -1017,6 +1022,11 @@
       };
 
       const handleMouseUp = () => {
+        // Handle event drag end first (higher priority)
+        if (draggingEvent) {
+          return;
+        }
+          
         if (!isDragging || !dragStart || !dragEnd) return;
         setIsDragging(false);
         
@@ -1270,9 +1280,8 @@
                           data-hour-slot={hour}
                           className="h-16 border-b hover:bg-gray-50 cursor-crosshair relative"
                           onMouseDown={(e) => handleMouseDown(e, hour, column.id)}
-                          onMouseMove={(e) => {
-                            handleMouseMove(e, hour);
-                            handleEventDrag(e, hour);
+                          onMouseMove={(e) => handleMouseMove(e, hour)}
+                          onMouseUp={handleMouseUp}  // SIMPLIFY THIS - remove the arrow function
                           }}
                           onMouseUp={(e) => {
                             handleMouseUp();
